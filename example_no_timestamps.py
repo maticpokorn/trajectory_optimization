@@ -1,6 +1,29 @@
-from trajectory import NoTimestampSolver
+from solver import NoTimestampSolver
 
-solver = NoTimestampSolver(d=5, r=2, q=2, dimensions=3)
-waypoints = [[1, 0, 0], [2, -1, 1], [2, 0, 1], [1, 1, 1], [0, 0, 1], [0, 0, 1.5]]
-solver.solve(waypoints, 5)
-solver.show_path()
+if __name__ == "__main__":
+    waypoints = [
+        [1, 0, 0],
+        [2, -1, 1],
+        [2, 0, 2],
+        [1, 1, 1],
+        [0, 0, 1],
+        [0, 0, 1.5],
+        [1, 1, 3],
+        [2, 2, 2],
+        [0, 3, 2],
+        [0, 1, 2],
+        [1.5, 0, 1],
+        [3, 0, 0],
+    ]
+    travel_time = 11
+    """
+    create trajectory of polynomial splines of degree 7
+    minimize norm of 3rd derivative (acceleration)
+    enforce continuity up to 4th derivative
+    trajectory in 3 dimesions
+    travel time is 11s
+    """
+    solver = NoTimestampSolver(d=7, r=3, q=4, dimensions=3)
+    solver.solve(waypoints, travel_time)
+    print(f"optimal objective: {solver.obj}")
+    solver.show_path()
