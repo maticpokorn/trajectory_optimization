@@ -8,3 +8,5 @@ Description of part of the method used can be found at: https://vnav.mit.edu/mat
 ![Example trajecotry in 2D](figure2d.png)
 
 ![Example trajecotry in 3D](figure3d.png)
+
+![Example of variable time segments optimization](img/animation.gif)
