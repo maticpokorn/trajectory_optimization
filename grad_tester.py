@@ -1,6 +1,11 @@
 import numpy as np
-from constraint_builder import LinearConstraintBuilder, GradLinearConstraintBuilder
+from constraint_builder import (
+    LinearConstraintBuilder,
+    GradLinearConstraintBuilder,
+    SecondOrderDerivativeLinearConstraintBuilder,
+)
 from solver import TimestampSolver
+from scipy.optimize import check_grad
 
 
 class GradTester:
@@ -12,7 +17,12 @@ class GradTester:
         numerical_grad = self.numerical_grad(x)
         grad = self.grad(x)
         error = np.sum(np.abs(grad - numerical_grad))
+        # print(grad)
+        # print(numerical_grad)
         print(f"error: {error}")
+        print(
+            f"relative error: {(np.sum(abs(grad - numerical_grad)) / np.sum(abs(grad)))}"
+        )
         return error
 
     def numerical_grad(self, x, eps=1e-6):
@@ -32,17 +42,61 @@ class GradTester:
         return np.array(grad)
 
 
+def test_2nd_derivative(x, t):
+    dA, db = GradLinearConstraintBuilder([1, 2], 3, 2).build([1])
+
+
 if __name__ == "__main__":
-    waypoints = np.array(
-        [[1, 0, 0], [2, -1, 1], [2, 0, 1], [1, 1, 1], [0, 0, 1], [0, 2, 2]]
-    )
-    t = np.array([0.5, 0.66, 1.1, 0.9, 0.75])
+    waypoints = np.array([[1, 0, 0], [2, -1, 1], [0, 0, 2]])
+    t = np.array([1.0, 0.5])
 
     solver = TimestampSolver(7, 4, 4, 3)
 
-    tester = GradTester(
+    grad_tester = GradTester(
         lambda t: solver.solve(waypoints, t), lambda t: solver.grad(waypoints, t)
     )
+    grad_tester.test(t)
+
+    grad_tester = GradTester(
+        lambda t: LinearConstraintBuilder(waypoints[:, 0], 7, 4).build(t)[0],
+        lambda t: GradLinearConstraintBuilder(waypoints[:, 0], 7, 4).build(t),
+    )
+    grad_tester.test(t)
+
+    grad_tester = GradTester(
+        lambda t: solver.P(t),
+        lambda t: solver.dP(t),
+    )
+    grad_tester.test(t)
+    """A = lambda t: LinearConstraintBuilder(waypoints[:, 0], 3, 2).build(t)[0]
+    dAs = lambda t: GradLinearConstraintBuilder(waypoints[:, 0], 3, 2).build(t)[1]
+    ddAs = lambda t: SecondOrderDerivativeLinearConstraintBuilder(
+        waypoints[:, 0], 3, 2
+    ).build(t)
+
+    dP = lambda t: TimestampSolver(3, 2, 2, 3).dPT(t)
+    ddP = lambda t: TimestampSolver(3, 2, 2, 3).ddPT(t)
+
+    print(dP(1.0))
+    print(ddP(1.0))
+
+    t = [0.01]
+    print("tester")
+    tester = GradTester(dP, ddP)
+    print("num")
     print(tester.numerical_grad(t))
+    print("analytic")
+    print(tester.grad(t[0]))
+    # tester.test(t)"""
+    """print("first order")
+    print(dAs(t))
+    print("second order")
+    print(ddAs(t))
+
+    print("tester")
+    tester = GradTester(dAs, ddAs)
+    print("num")
+    print(tester.numerical_grad(t))
+    print("analytic")
     print(tester.grad(t))
-    tester.test(t)
+    # tester.test(t)"""
