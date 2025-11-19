@@ -388,15 +388,6 @@ class NoTimestampSolver(Solver):
             # print(f"time for qp solve: {time() - start_time}")
             grad = self.timestamp_solver.grad(self.waypoints, t)
             H = self.timestamp_solver.hess(self.waypoints, t)
-            print(
-                "error: ",
-                check_grad(
-                    lambda t: self.timestamp_solver.grad(self.waypoints, t),
-                    lambda t: self.timestamp_solver.hess(self.waypoints, t),
-                    t,
-                )
-                / np.sum(grad),
-            )
             # print(grad)
             # print(grad_schur)"""
             grad = grad / np.linalg.norm(grad)
