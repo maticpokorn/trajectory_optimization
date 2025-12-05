@@ -7,17 +7,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
-from scipy.linalg import block_diag
+from scipy.linalg import block_diag, solve
 from constraint_builder import (
     LinearConstraintBuilder,
     GradLinearConstraintBuilder,
     SecondOrderDerivativeLinearConstraintBuilder,
 )
+from fast_constraint_builder import EqualityConstraintBuilder
+from fast_derivative_constraint_builer import (
+    EqualityConstraintBuilder1st,
+    EqualityConstraintBuilder2nd,
+)
 from time import time
-from scipy.sparse.linalg import spsolve
-from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import spsolve, splu
+from scipy.sparse import csr_matrix, csc_matrix
 from scipy.optimize import minimize, LinearConstraint, Bounds
-from null_space_solver import NullSpaceSolver
 
 
 class Solver:
@@ -151,9 +155,14 @@ class TimestampSolver(Solver):
         P = self.P(self.t)
         q = np.zeros(self.n_segments * (self.d + 1))
         for dim in range(self.dimensions):
-            A, b, _ = LinearConstraintBuilder(
+            """A, b, _ = LinearConstraintBuilder(
                 self.waypoints[:, dim], self.d, self.q
-            ).build(self.t)
+            ).build(self.t)"""
+            A, b = (
+                EqualityConstraintBuilder(self.waypoints[:, dim], self.d, self.q)
+                .build(self.t)
+                .matrix()
+            )
             # self.test_matrices(P, A, b)
             sol = qp(matrix(P), matrix(q), None, None, matrix(A), matrix(b))
             res_dim = np.array(sol["x"]).reshape((self.n_segments, self.d + 1))
@@ -162,16 +171,7 @@ class TimestampSolver(Solver):
             result[dim, :, :] = res_dim
             self.result = result
             self.obj += sol["primal objective"]
-        # print(self.obj)
         return self.obj
-
-    def solve_with(self, P, q, A, b, solver_type="cvxopt"):
-        if solver_type == "cvxopt":
-            sol = qp(matrix(P), matrix(q), None, None, matrix(A), matrix(b))
-            x = np.array(sol["x"])[:, 0]
-            nu = np.array(sol["y"])[:, 0]
-            res_dim = np.array(sol["x"]).reshape((self.n_segments, self.d + 1))
-            obj = sol["primal objective"]
 
     def test_matrices(self, P, A, b):
         n = P.shape[0]
@@ -184,42 +184,153 @@ class TimestampSolver(Solver):
         )
         print("n =", n)
 
+    def reshape(self, dAT, y):
+        z = np.zeros(self.d + 1)[:, np.newaxis].T
+        print(dAT.shape, y.shape, z.shape)
+
+        dAT = np.concatenate((z, dAT, z)).reshape(self.d + 1, -1)
+        y = np.concatenate(([0], y, [0])).reshape(self.d + 1, -1)
+        return dAT, y
+
     def grad(self, waypts, t):
         n_segments = len(t)
         grad = np.zeros((self.dimensions, n_segments))
         P = self.P(t)
         dPs = self.dP(t)
+        dPs_ = self.dPTs(t)
+
+        A, b = EqualityConstraintBuilder(waypts[:, 0], self.d, self.q).build(t).matrix()
+        dAs = (
+            EqualityConstraintBuilder1st(n_segments, self.d, self.q).build(t).matrices()
+        )
+        dAs_ = (
+            EqualityConstraintBuilder1st(n_segments, self.d, self.q)
+            .build(t)
+            .constraints
+        )
+        dAs_ = np.concatenate(dAs_)
+        print(dPs_.shape, dAs_.shape)
+
+        m, n = A.shape
+        K = csc_matrix(np.block([[P, A.T], [A, np.zeros((m, m))]]))
+        lu = splu(K)
+
         for dim in range(self.dimensions):
-
-            A, b, independent = LinearConstraintBuilder(
-                waypts[:, dim], self.d, self.q
-            ).build(t)
-            dAs = GradLinearConstraintBuilder(waypts[:, dim], self.d, self.q).build(t)
-
-            # nspace = NullSpaceSolver(P, A)
-
             x = self.x[dim]
             y = self.nu[dim]
 
-            m, n = A.shape
-            K = csr_matrix(np.block([[P, A.T], [A, np.zeros((m, m))]]))
+            x_ = x.reshape(self.d + 1, -1)
+            print(x.shape, y.shape, x_.shape)
+
+            dAs_, y_ = self.reshape(dAs_, y)
+            print(dAs_.shape, y_.shape)
+
+            dPx = dPs_ @ x_
+            dAx = dAs_ @ x_
+            dATy = dAs_.T @ y
+
+            print(dPx.shape, dAx.shape, dATy.shape)
 
             for i in range(n_segments):
                 dP = dPs[i]
-                dA = dAs[i][independent]
-                # start = time()
+                dA = dAs[i]  # [independent]
                 rhs = -np.concatenate((dP @ x + dA.T @ y, dA @ x))
-                dxy = spsolve(A=K, b=rhs)
-                # print(f"regular solve: {time() - start}")
-                # start = time()
-                # dx_, dy_ = nspace.solve(-(dP @ x + dA.T @ y), -dA @ x)
-                # print(f"nullspace solve: {time() - start}")
+                dxy = lu.solve(rhs)
                 dx = dxy[: (self.d + 1) * n_segments][:, np.newaxis]
-                # print(np.sum(np.abs(dx_[:, np.newaxis] - dx)) / np.sum(np.abs(dx)))
                 dF = dx.T @ P @ x + 1 / 2 * x.T @ dP @ x
                 grad[dim, i] = dF
 
         return np.sum(grad, axis=0)
+
+    def grad_hess(self, waypts, t):
+        n_segments = len(t)
+        grad = np.zeros((self.dimensions, n_segments))
+        H = np.zeros((self.dimensions, n_segments, n_segments))
+        P = self.P(t)
+        PTs = self.PTs(t)
+        dPs = self.dP(t)
+        ddPs = self.ddP(t)
+
+        constr_time = 0
+        matmul_time = 0
+
+        start = time()
+        A, b = EqualityConstraintBuilder(waypts[:, 0], self.d, self.q).build(t).matrix()
+        dAs = (
+            EqualityConstraintBuilder1st(n_segments, self.d, self.q).build(t).matrices()
+        )
+        ddAs = (
+            EqualityConstraintBuilder2nd(n_segments, self.d, self.q).build(t).matrices()
+        )
+        constr_time += time() - start
+
+        m, n = A.shape
+        K = csc_matrix(np.block([[P, A.T], [A, np.zeros((m, m))]]))
+        lu = splu(K)
+
+        for dim in range(self.dimensions):
+
+            x = self.x[dim]
+            y = self.nu[dim]
+
+            dxs = np.zeros((n_segments, (self.d + 1) * n_segments))
+            dys = np.zeros((n_segments, m))
+
+            for i in range(n_segments):
+                dP = dPs[i]
+                dA = dAs[i]
+                rhs = -np.concatenate((dP @ x + dA.T @ y, dA @ x))
+
+                dxy = lu.solve(rhs)
+                dx = dxy[: (self.d + 1) * n_segments][:, np.newaxis]
+                dy = dxy[(self.d + 1) * n_segments :]  # [:, np.newaxis]
+                dxs[i] = dx[:, 0]
+                dys[i] = dy
+
+                dF = dx.T @ P @ x + 1 / 2 * x.T @ dP @ x
+                grad[dim, i] = dF
+
+            print(PTs.shape, dxs.shape)
+
+            # Pdx = dxs @ PTs
+
+            for i in range(n_segments):
+                dAi = dAs[i]
+                for j in range(i, n_segments):
+                    dAj = dAs[j]
+
+                    start = time()
+                    b1 = (
+                        dPs[j] @ dxs[i]
+                        + dPs[i] @ dxs[j]
+                        + dAj.T @ dys[i]
+                        + dAi.T @ dys[j]
+                    )
+                    b2 = dAj @ dxs[i] + dAi @ dxs[j]
+                    if i == j:
+                        b1 += ddPs[i] @ x + ddAs[i].T @ y
+                        b2 += ddAs[i] @ x
+                    matmul_time += time() - start
+
+                    rhs = -np.concatenate((b1, b2))
+                    ddxy = lu.solve(rhs)
+                    ddx = ddxy[: (self.d + 1) * n_segments][:, np.newaxis]
+
+                    ddF = (
+                        dxs[j].T @ P @ dxs[i]
+                        + x.T @ dPs[j] @ dxs[i]
+                        + x.T @ P @ ddx
+                        + x.T @ dPs[i] @ dxs[j]
+                    )
+                    if i == j:
+                        ddF += 1 / 2 * x.T @ ddPs[i] @ x
+
+                    H[dim, i, j] = ddF
+                    H[dim, j, i] = ddF
+
+        print(f"constr time: {constr_time}")
+        print(f"matmul time: {matmul_time}")
+        return np.sum(grad, axis=0), np.sum(H, axis=0)
 
     def hess(self, waypts, t):
         n_segments = len(t)
@@ -240,8 +351,8 @@ class TimestampSolver(Solver):
             y = self.nu[dim]
 
             m, n = A.shape
-            K = csr_matrix(np.block([[P, A.T], [A, np.zeros((m, m))]]))
-
+            K = csc_matrix(np.block([[P, A.T], [A, np.zeros((m, m))]]))
+            lu = splu(K)
             dxs = np.zeros((n_segments, (self.d + 1) * n_segments))
             dys = np.zeros((n_segments, m))
             # print((self.d + 1) * n_segments, m)
@@ -250,7 +361,8 @@ class TimestampSolver(Solver):
                 dP = dPs[i]
                 dA = dAs[i][independent]
                 rhs = -np.concatenate((dP @ x + dA.T @ y, dA @ x))
-                dxy = spsolve(A=K, b=rhs)
+                # dxy = spsolve(A=K, b=rhs)
+                dxy = lu.solve(rhs)
                 dx = dxy[: (self.d + 1) * n_segments]  # [:, np.newaxis]
                 dy = dxy[(self.d + 1) * n_segments :]  # [:, np.newaxis]
                 dxs[i] = dx
@@ -275,7 +387,8 @@ class TimestampSolver(Solver):
                         b2 += ddAs[i] @ x
 
                     rhs = -np.concatenate((b1, b2))
-                    ddxy = spsolve(A=K, b=rhs)
+                    # ddxy = spsolve(A=K, b=rhs)
+                    ddxy = lu.solve(rhs)
 
                     # print("accuracy: ", np.mean(K @ ddxy - rhs))
                     ddx = ddxy[: (self.d + 1) * n_segments][:, np.newaxis]
@@ -315,6 +428,10 @@ class TimestampSolver(Solver):
                 PT[k, l] = q
         return PT
 
+    def PTs(self, t):
+        PTs = np.concatenate([self.PT(T) for T in t])
+        return PTs
+
     def dP(self, t):
         dPs = []
         n = len(t)
@@ -327,6 +444,9 @@ class TimestampSolver(Solver):
             ] = dPT
             dPs.append(dP)
         return np.array(dPs)
+
+    def dPTs(self, t):
+        return np.concatenate([self.dPT(T) for T in t])
 
     def dPT(self, T):
         dPT = np.zeros((self.d + 1, self.d + 1))
@@ -372,22 +492,23 @@ class NoTimestampSolver(Solver):
         self.timestamp_solver = TimestampSolver(d, r, q, dimensions)
         self.tol = tol
 
-    def solve(self, waypoints, T, lr=0.2):
+    def solve(self, waypoints, T, lr=1):
         self.waypoints = np.array(waypoints)
         dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
         t = T * dists / np.sum(dists)
         n = self.waypoints.shape[0] - 1
-        t = np.random.rand(n)
-        t = T / np.sum(t) * t
+        # t = np.random.rand(n)
+        # t = T / np.sum(t) * t
         prev_obj = 1e12
         dif = 1e12
         i = 0
-        while dif > self.tol and i < 50:
-            start_time = time()
+        self.intermediate_results = []
+        while dif > self.tol and i < 10:
+            # start_time = time()
             obj = self.timestamp_solver.solve(self.waypoints, t)
+            self.intermediate_results.append(obj)
             # print(f"time for qp solve: {time() - start_time}")
             grad = self.timestamp_solver.grad(self.waypoints, t)
-            H = self.timestamp_solver.hess(self.waypoints, t)
             # print(grad)
             # print(grad_schur)"""
             grad = grad / np.linalg.norm(grad)
@@ -399,14 +520,14 @@ class NoTimestampSolver(Solver):
             prev_obj = obj
             # self.timestamp_solver.show_path(i)
             i += 1
-            # print(obj)
+            print(obj)
 
         print(f"iter: {i}")
         self.obj = obj
         self.x = self.timestamp_solver.obj
         self.result = self.timestamp_solver.result
         self.t = self.timestamp_solver.t
-        return obj
+        return obj, self.intermediate_results
 
     def solve_scipy(self, waypoints, T, use_jac=False, use_hess=False):
         self.intermediate_results = []
@@ -416,7 +537,7 @@ class NoTimestampSolver(Solver):
         n = self.waypoints.shape[0] - 1
         lc = LinearConstraint(np.ones(n), -np.inf, T)
         bounds = Bounds(np.zeros(n), np.inf)
-        options = {"maxiter": 30, "verbose": 3}
+        options = {"maxiter": 10, "verbose": 3}
         if use_hess:
             res = minimize(
                 fun=lambda t: self.timestamp_solver.solve(self.waypoints, t),
@@ -460,3 +581,114 @@ class NoTimestampSolver(Solver):
     def callback(self, intermediate_result):
         self.intermediate_results.append(intermediate_result.fun)
         print(f"{len(self.intermediate_results)}: {round(intermediate_result.fun, 4)}")
+
+    def solve_newton(self, waypoints, T, lr=1):
+        self.waypoints = np.array(waypoints)
+
+        n = self.waypoints.shape[0] - 1
+        normal = np.ones(n)
+        normal_ = np.ones(n)[:, np.newaxis]
+        P = np.eye(n) - (normal_ @ normal_.T) / normal @ normal
+
+        # P = np.eye(n) - np.ones((n, n)) / normal @ normal
+
+        dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+        t = T * dists / np.sum(dists)
+
+        prev_obj = 1e12
+        dif = 1e12
+        i = 0
+        self.intermediate_results = []
+        while dif > self.tol and i < 10:
+            # start_time = time()
+            obj = self.timestamp_solver.solve(self.waypoints, t)
+            self.intermediate_results.append(obj)
+            # print(f"time for qp solve: {time() - start_time}")
+            grad = self.timestamp_solver.grad(self.waypoints, t)
+            H = self.timestamp_solver.hess(self.waypoints, t)
+
+            grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
+
+            H_proj = P @ H @ P
+            dt = -solve(H_proj, grad_proj)
+            # print(grad)
+            # print(grad_schur)"""
+            # dt = dt / np.linalg.norm(dt)
+
+            # dt_proj = dt - (dt @ normal) / (normal @ normal) * normal
+
+            # v = v / np.linalg.norm(v)
+            # v = v - np.mean(v)
+            lr = 1
+            t_new = t + lr * dt
+            t_new = t_new / np.sum(t) * T
+            while np.min(t_new) < 0.2:
+                lr -= 0.1
+                t_new = t + lr * dt
+                t_new = t_new / np.sum(t) * T
+
+            t = t_new
+            print(lr)
+            # t *= T / np.sum(t)
+            dif = abs(prev_obj - obj)
+            prev_obj = obj
+            # self.timestamp_solver.show_path(i)
+            i += 1
+            print(obj)
+
+        print(f"iter: {i}")
+        self.obj = obj
+        self.x = self.timestamp_solver.obj
+        self.result = self.timestamp_solver.result
+        self.t = self.timestamp_solver.t
+        return obj, self.intermediate_results
+
+    def solve_hybrid(self, waypoints, T, k=3):
+        self.waypoints = np.array(waypoints)
+
+        n = self.waypoints.shape[0] - 1
+        normal = np.ones(n)
+        normal_ = np.ones(n)[:, np.newaxis]
+        P = np.eye(n) - (normal_ @ normal_.T) / normal @ normal
+
+        # P = np.eye(n) - np.ones((n, n)) / normal @ normal
+
+        dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+        t = T * dists / np.sum(dists)
+
+        prev_obj = 1e12
+        dif = 1e12
+        i = 0
+        self.intermediate_results = []
+        while dif > self.tol and i < 10:
+            # start_time = time()
+            obj = self.timestamp_solver.solve(self.waypoints, t)
+            self.intermediate_results.append(obj)
+            # print(f"time for qp solve: {time() - start_time}")
+
+            if i < k:
+                grad = self.timestamp_solver.grad(self.waypoints, t)
+                grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
+                grad = grad / np.linalg.norm(grad)
+                grad = grad - np.mean(grad)
+                t -= grad
+                t = t / np.sum(t) * T
+            else:
+                grad, H = self.timestamp_solver.grad_hess(self.waypoints, t)
+                grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
+                H_proj = P @ H @ P
+                dt = -solve(H_proj, grad_proj)
+                t += dt
+                t = t / np.sum(t) * T
+
+            dif = abs(prev_obj - obj)
+            prev_obj = obj
+            i += 1
+            print(obj)
+
+        print(f"iter: {i}")
+        self.obj = obj
+        self.x = self.timestamp_solver.obj
+        self.result = self.timestamp_solver.result
+        self.t = self.timestamp_solver.t
+        return obj, self.intermediate_results

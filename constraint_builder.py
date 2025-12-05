@@ -47,6 +47,7 @@ class LinearConstraintBuilder:
         for j in range(1, self.q + 1):
             constraints.append(self.start_constraint(j, 0))
             constraints.append(self.end_constraint(j, 0, t))
+
         A, b = self.unpack(constraints)
         # independent = self.independent(A, b)
         independent = np.arange(A.shape[0])

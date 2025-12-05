@@ -30,8 +30,8 @@ if __name__ == "__main__":
         [1.5, 0, 1],
         [3, 0, 0],
     ]
-    n = 50
-    np.random.seed(11)
+    n = 10
+    np.random.seed(3)
     waypoints = np.random.rand(n, 3)
     travel_time = n
     """
@@ -41,32 +41,54 @@ if __name__ == "__main__":
     trajectory in 3 dimesions
     travel time is 11s
     """
-    start_time = time()
-    solver = NoTimestampSolver(d=7, r=3, q=3, dimensions=3)
-    obj_hess, intermediate_results_hess = solver.solve_scipy(
+
+    solver = NoTimestampSolver(d=9, r=3, q=3, dimensions=3)
+    """obj_hess, intermediate_results_hess = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=True
-    )
-
-    obj_jac, intermediate_results_jac = solver.solve_scipy(
+    )"""
+    # obj_hess, intermediate_results_hess = solver.solve_newton(waypoints, travel_time)
+    start_time = time()
+    obj_jac, intermediate_results_jac = solver.solve(waypoints, travel_time)
+    print(f"time: {time() - start_time}")
+    """obj_jac, intermediate_results_jac = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=False
-    )
+    )"""
 
-    obj, intermediate_results = solver.solve_scipy(
+    """obj, intermediate_results = solver.solve_scipy(
         waypoints, travel_time, use_jac=False, use_hess=False
+    )"""
+    start_time = time()
+    obj_hybrid, intermediate_results_hybrid = solver.solve_hybrid(
+        waypoints, travel_time, k=3
     )
-    plt.plot(
+    print(f"time: {time() - start_time}")
+    """plt.plot(
         range(len(intermediate_results_hess)),
         intermediate_results_hess,
-        label="hess, jac",
-    )
+        label="newton method",
+    )"""
     plt.plot(
         range(len(intermediate_results_jac)),
         intermediate_results_jac,
-        label="no hess, jac",
+        label="gradient descent",
+        color="blue",
+        marker="x",
     )
+    """plt.plot(
+        range(len(intermediate_results)),
+        intermediate_results,
+        label="trust-constr: no hess, no jac",
+        color="lime",
+        marker="x",
+    )"""
     plt.plot(
-        range(len(intermediate_results)), intermediate_results, label="no hess, no jac"
+        range(len(intermediate_results_hybrid)),
+        intermediate_results_hybrid,
+        label="hybrid",
+        color="red",
+        marker="x",
     )
+    # plt.ylim([0.98 * min(intermediate_results_hybrid), 1.2 * intermediate_results[1]])
     plt.legend()
     plt.show()
     # solver.show_path()
