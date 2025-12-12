@@ -1,5 +1,6 @@
 import numpy as np
 import math
+from scipy.sparse import lil_matrix
 
 
 class EqualityConstraintBuilder:
@@ -81,3 +82,41 @@ class EqualityConstraintBuilder:
         A[-(self.q + 1) :, -(self.d + 1) :] = self.blocks[-1][0]
         b[-(self.q + 1) :] = self.bs[-1]
         return A, b
+
+    def matrix_sparse(self):
+
+        # Dimensions
+        n_rows = (self.n + 1) * (self.q + 1) + (self.n - 1)
+        n_cols = self.n * (self.d + 1)
+
+        # Sparse matrix for incremental construction
+        A = lil_matrix((n_rows, n_cols))
+        b = np.zeros(n_rows)  # keep dense
+
+        n = self.q + 2  # rows per block
+        m = self.d + 1  # cols per block
+
+        # --- First block ---
+        A[: n - 1, :m] = self.blocks[0][1]
+        b[: n - 1] = self.bs[0]
+
+        # --- Middle blocks ---
+        row = n - 1
+        col = 0
+        for k in range(1, self.n):
+            # Left part of the block
+            A[row : row + n, col : col + m] = self.blocks[k][0]
+            # Right part of the block
+            A[row : row + n, col + m : col + 2 * m] = self.blocks[k][1]
+            # RHS
+            b[row : row + n] = self.bs[k]
+
+            row += n
+            col += m
+
+        # --- Last block ---
+        A[-(self.q + 1) :, -(self.d + 1) :] = self.blocks[-1][0]
+        b[-(self.q + 1) :] = self.bs[-1]
+
+        # Convert to CSR for efficient arithmetic and solver usage
+        return A.tocsc(), b

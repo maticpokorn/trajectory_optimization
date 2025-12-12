@@ -30,7 +30,7 @@ if __name__ == "__main__":
         [1.5, 0, 1],
         [3, 0, 0],
     ]
-    n = 10
+    n = 40
     np.random.seed(3)
     waypoints = np.random.rand(n, 3)
     travel_time = n
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     travel time is 11s
     """
 
-    solver = NoTimestampSolver(d=9, r=3, q=3, dimensions=3)
+    solver = NoTimestampSolver(d=11, r=3, q=3, dimensions=3)
     """obj_hess, intermediate_results_hess = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=True
     )"""
@@ -55,11 +55,11 @@ if __name__ == "__main__":
     )"""
 
     """obj, intermediate_results = solver.solve_scipy(
-        waypoints, travel_time, use_jac=False, use_hess=False
+        waypoints, travel_time, use_jac=True, use_hess=True
     )"""
     start_time = time()
     obj_hybrid, intermediate_results_hybrid = solver.solve_hybrid(
-        waypoints, travel_time, k=3
+        waypoints, travel_time, k=3, banded_hessian=False
     )
     print(f"time: {time() - start_time}")
     """plt.plot(
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     """plt.plot(
         range(len(intermediate_results)),
         intermediate_results,
-        label="trust-constr: no hess, no jac",
+        label="trust-constr: hess, jac",
         color="lime",
         marker="x",
     )"""
@@ -90,5 +90,6 @@ if __name__ == "__main__":
     )
     # plt.ylim([0.98 * min(intermediate_results_hybrid), 1.2 * intermediate_results[1]])
     plt.legend()
+    plt.yscale("log")
     plt.show()
     # solver.show_path()
