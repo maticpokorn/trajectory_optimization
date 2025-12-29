@@ -24,6 +24,7 @@ from time import time
 from scipy.sparse.linalg import spsolve, splu
 from scipy.sparse import csr_matrix, csc_matrix
 from scipy.optimize import minimize, LinearConstraint, Bounds
+import seaborn as sns
 
 
 class Solver:
@@ -226,60 +227,30 @@ class TimestampSolver(Solver):
         return dAT, y
 
     def build_rhs(self, n_segments, x, y, dPs_, dAs_):
-        x_ = x.reshape(n_segments, self.d + 1)
-        dAs__ = np.vstack(dAs_[1:] + [np.zeros(self.d + 1)])
-        dAs__ = dAs__.reshape(n_segments, self.q + 2, self.d + 1)
-        y__ = np.hstack((y[self.q + 1 :], [0])).reshape(n_segments, self.q + 2)
-        dPx = np.einsum("ijk,ij->ik", np.array(dPs_), x_)
-        dATy = np.einsum("ijk,ij->ik", dAs__, y__)
-        dAx = np.einsum("ijk,ik->ij", dAs__, x_)
-        """print(dPx.shape, dATy.shape, dAx.shape)
-        n = self.q + 2
-        i = n - 1
-        y_ = []
-        for _ in range(n_segments - 1):
-            y_.append(y[i : i + n])
-            i += n
-        y_.append(y[-(self.q + 1) :])
+        x = x.reshape(n_segments, self.d + 1)
 
-        # dPxs = []
-        dAxs = []
-        # dATys = []
-        dPx_plus_dATy = []
-        for da, y, dp, x in zip(dAs_[1:], y_, dPs_, x_):
-            # print(da.shape, y.shape, dp.shape, x_.shape)
-            # dPxs.append((dp @ x).reshape(1, -1))
-            dAxs.append((da @ x).reshape(1, -1))
-            # dATys.append((da.T @ y).reshape(1, -1))
-            dPx_plus_dATy.append((dp @ x + da.T @ y).reshape(1, -1))"""
+        # remove reduntant first row (because=0) and add a row so it can be reshaped
+        dAs = np.vstack(dAs_[1:] + [np.zeros(self.d + 1)]).reshape(
+            n_segments, self.q + 2, self.d + 1
+        )
+        y = np.hstack((y[self.q + 1 :], [0])).reshape(n_segments, self.q + 2)
+        dPx = np.einsum("ijk,ij->ik", np.array(dPs_), x)
+        dATy = np.einsum("ijk,ij->ik", dAs, y)
+        dAx = np.einsum("ijk,ik->ij", dAs, x)
 
-        """b1 = scipy.sparse.block_diag(dPxs, format="csr") + scipy.sparse.block_diag(
-            dATys, format="csr"
-        )"""
-        # print(dPx_plus_dATy[-1])
-        # print((dPx + dATy)[-1])
-        # print(dAx[-1])
-        # print(dAxs[-1])
-        # b1 = scipy.sparse.block_diag(dPx_plus_dATy, format="csr")
-        # mid = scipy.sparse.csr_matrix((n_segments, self.q + 1))
-        # b2 = scipy.sparse.block_diag(dAxs, format="csr")
-        # print(b1.shape, mid.shape, b2.shape)
-        # rhs = -scipy.sparse.hstack([b1, mid, b2], format="csr")
-
-        b1_ = scipy.sparse.block_diag((dPx + dATy)[:, :, np.newaxis], format="csr").T
+        b1 = scipy.sparse.block_diag((dPx + dATy)[:, :, np.newaxis], format="csr").T
         mid = scipy.sparse.csr_matrix((n_segments, self.q + 1))
         dAx = dAx[:, :, np.newaxis]
         b2_input = [e for e in dAx[:-1]] + [dAx[-1, :-1]]
-        b2_ = scipy.sparse.block_diag(b2_input, format="csr").T
-        rhs_ = -scipy.sparse.hstack([b1_, mid, b2_], format="csr")
-        xdPx = np.einsum("bi,bij,bj->b", x_, np.array(dPs_), x_)
-        return rhs_, xdPx
+        b2 = scipy.sparse.block_diag(b2_input, format="csr").T
+        rhs = -scipy.sparse.hstack([b1, mid, b2], format="csr")
+        xdPx = np.einsum("bi,bij,bj->b", x, np.array(dPs_), x)
+        return rhs, xdPx
 
     def grad2(self, waypts, t):
         n_segments = len(t)
         grad = np.zeros((self.dimensions, n_segments))
-        # P = self.P(t)
-        A, b = (
+        A, _ = (
             EqualityConstraintBuilder(waypts[:, 0], self.d, self.q)
             .build(t)
             .matrix_sparse()
@@ -290,20 +261,15 @@ class TimestampSolver(Solver):
             .constraints
         )
         dPs = self.dPTs(t)
-        m, n = A.shape
         K = bmat([[self.P_sp, A.T], [A, None]], format="csc")
-        # K = csc_matrix(np.block([[P, A.T], [A, np.zeros((m, m))]]))
         lu = splu(K)
         for dim in range(self.dimensions):
             x = self.x[dim]
             y = self.nu[dim]
-
-            # start = time()
             rhs, xdPx = self.build_rhs(n_segments, x, y, dPs, dAs)
             dxy = lu.solve(rhs.T.toarray())
             dx = dxy[: (self.d + 1) * n_segments]
             grad[dim] = dx.T @ self.P_sp @ x + 1 / 2 * xdPx
-            # print("vectorized time: ", time() - start)
         return np.sum(grad, axis=0)
 
     def grad(self, waypts, t):
@@ -361,16 +327,81 @@ class TimestampSolver(Solver):
 
         return np.sum(grad, axis=0)
 
-    def build_hess_rhs(self, n_segments, x, y, dx, dy, dPs, dAs, ddPs, ddAs):
-        ddPx = []
-        dPdx = []
-        ddATy = []
-        dATdy = []
-        ddAx = []
-        dAdx = []
-        x = x.reshape
-        dx = dx.reshape(n_segments, n_segments, self.d + 1)
-        dPdx = np.einsum("ij,ijk->ik", dPs, dx)
+    def build_hess_rhs(self, n_segments, x, y, dx, dy, Ps, dPs, dAs, ddPs, ddAs):
+
+        x = x.reshape(n_segments, self.d + 1)
+        dx = dx.reshape(n_segments, self.d + 1, n_segments).transpose(0, 2, 1)
+
+        y = np.hstack((y[self.q + 1 :], [0])).reshape(n_segments, self.q + 2)
+        dy = (
+            np.vstack((dy[self.q + 1 :], np.zeros((self.n_segments))))
+            .reshape(n_segments, self.q + 2, n_segments)
+            .transpose(0, 2, 1)
+        )
+
+        # remove reduntant first row (because=0) and add a row so it can be reshaped
+        dAs = np.vstack(dAs[1:] + [np.zeros(self.d + 1)]).reshape(
+            n_segments, self.q + 2, self.d + 1
+        )
+        ddAs = np.vstack(ddAs[1:] + [np.zeros(self.d + 1)]).reshape(
+            n_segments, self.q + 2, self.d + 1
+        )
+        dP = np.array(dPs)
+        ddP = np.array(ddPs)
+        ddPx = np.einsum("ijk,ij->ik", ddP, x)
+        dPdx = np.einsum("ijk,ilj->ilk", dP, dx)
+        ddATy = np.einsum("ijk,ij->ik", ddAs, y)
+        dATdy = np.einsum("ijk,ilj->ilk", dAs, dy)
+        ddAx = np.einsum("ijk,ik->ij", ddAs, x)
+        dAdx = np.einsum("ijk,ilk->ilj", dAs, dx)
+
+        ddPx = np.einsum("ij,ik->ijk", np.eye(n_segments), ddPx)
+        ddATy = np.einsum("ij,ik->ijk", np.eye(n_segments), ddATy)
+        ddAx = np.einsum("ij,ik->ijk", np.eye(n_segments), ddAx)
+
+        print(x.shape, dPdx.shape, ddPx.shape)
+        xdPdx = np.einsum("kj,kij->ki", x, dPdx)
+        xddPx = np.einsum("ij,kij->ki", x, ddPx)
+
+        # print(dx.shape, Ps.shape)
+        # Pdx = np.einsum("ikj,ilj->ilk", Ps, dx)
+        # print(dx.shape, Pdx.shape)
+        # dxPdx = np.einsum("ijk,ijl->ij", dx, Pdx)
+        # print(dxPdx.shape)
+        dxPdx = np.einsum("kil, klm, kjm -> ij", dx, Ps, dx, optimize=True)
+
+        k = np.arange(n_segments**2)
+        indices = (k % n_segments) * n_segments + k // n_segments
+
+        dPdx = scipy.sparse.block_diag(dPdx, format="csr")
+        dPdxT = dPdx[indices]
+        dATdy = scipy.sparse.block_diag(dATdy, format="csr")
+        dATdyT = dATdy[indices]
+        # ddPx_ddATy = scipy.sparse.block_diag(ddPx + ddATy, format="csr")
+        ddPx = scipy.sparse.block_diag(ddPx, format="csr")
+        ddATy = scipy.sparse.block_diag(ddATy, format="csr")
+
+        b1 = dPdx + dPdxT + dATdy + dATdyT + ddPx + ddATy
+
+        # dPdx_dATdy = scipy.sparse.block_diag(dPdx + dATdy, format="csr")
+
+        # dPdxT_dATdyT = dPdx_dATdy[indices]
+        # b1 = dPdx_dATdy + dPdxT_dATdyT + ddPx_ddATy
+        """dPdx_dATdy_ddPx_ddATy = scipy.sparse.block_diag(
+            dPdx + dATdy + 0.5 * ddPx + ddATy, format="csr"
+        )"""
+        # b1 = dPdx_dATdy_ddPx_ddATy + dPdx_dATdy_ddPx_ddATy[indices]
+
+        dAdx = scipy.sparse.block_diag(dAdx, format="csr")
+        dAdxT = dAdx[indices]
+        ddAx = scipy.sparse.block_diag(ddAx, format="csr")
+        b2 = (dAdx + dAdxT + ddAx)[:, :-1]
+        # dAdx_ddAx = scipy.sparse.block_diag(dAdx + 0.5 * ddAx, format="csr")
+        # b2 = (dAdx_ddAx + dAdx_ddAx[indices])[:, :-1]
+        mid = scipy.sparse.csr_matrix((n_segments * n_segments, self.q + 1))
+        rhs = -scipy.sparse.hstack([b1, mid, b2], format="csr")
+
+        return rhs, xdPdx, xddPx, dPdx, dxPdx
 
     def grad_hess2(self, waypts, t):
         n_segments = len(t)
@@ -390,18 +421,52 @@ class TimestampSolver(Solver):
             .build(t)
             .constraints
         )
+        Ps = np.array([self.PT(t) for t in self.t])
+        P = self.P_sparse(t)
         dPs = self.dPTs(t)
-        K = bmat([[self.P_sp, A.T], [A, None]], format="csc")
+        ddPs = self.ddPTs(t)
+
+        K = bmat([[P, A.T], [A, None]], format="csc")
         lu = splu(K)
+        H = np.zeros((self.dimensions, n_segments, n_segments))
         for dim in range(self.dimensions):
+            start = time()
             x = self.x[dim]
             y = self.nu[dim]
             rhs, xdPx = self.build_rhs(n_segments, x, y, dPs, dAs)
             dxy = lu.solve(rhs.T.toarray())
             dx = dxy[: (self.d + 1) * n_segments]
-            grad[dim] = dx.T @ self.P_sp @ x + 1 / 2 * xdPx
+            dy = dxy[(self.d + 1) * n_segments :]
+            grad[dim] = dx.T @ self.P_sparse(t) @ x + 1 / 2 * xdPx
+            print(f"time for grad: {time() - start}")
+
+            rhs, xdPdx, xddPx, dPdx, dxPdx = self.build_hess_rhs(
+                n_segments, x, y, dx, dy, Ps, dPs, dAs, ddPs, ddAs
+            )
+            rhs = rhs.toarray().T
+            # print(K.shape, rhs.shape)
+            # print(rhs[0])
+            ddxy = lu.solve(rhs).T
+            print(ddxy.shape)
+            # print(ddxy.shape)
+            ddx_ = ddxy[:, : (self.d + 1) * n_segments]
+            print(ddx_.shape)
+            ddx = ddx_.reshape((n_segments, n_segments, n_segments, self.d + 1))
+            x = x.reshape(n_segments, self.d + 1)
+
+            print(x.shape, Ps.shape, ddx.shape)
+            xPddx = np.einsum("kl, klm, ijkm -> ij", x, Ps, ddx, optimize=True)
+
+            H[dim] = 1 / 2 * xddPx + xdPdx + xdPdx.T + dxPdx + xPddx
+
+            return rhs.T, xdPdx, xddPx, dPdx, dxPdx, xPddx, ddx_, np.sum(H, axis=0)
 
     def grad_hess(self, waypts, t):
+        start = time()
+        rhs_fast, xdPdx, xddPx, dPdx, dxPdx, xPddx, ddx_, H_ = self.grad_hess2(
+            waypts, t
+        )
+        print(f"time for fast hess: {time() - start}")
         n_segments = len(t)
         grad = np.zeros((self.dimensions, n_segments))
         H = np.zeros((self.dimensions, n_segments, n_segments))
@@ -472,9 +537,51 @@ class TimestampSolver(Solver):
                     matmul_time += time() - start
 
                     rhs = -np.concatenate((b1, b2))
+                    # print(i, j, np.mean(np.abs(rhs - rhs_fast[j * n_segments + i])))
+
                     ddxy = lu.solve(rhs)
                     ddx = ddxy[: (self.d + 1) * n_segments][:, np.newaxis]
 
+                    err = lambda x, y: np.sum(np.abs(x - y))
+                    # print(f"dPdx {i} {j}:")
+                    # print(dPdx[i * n_segments + j])
+                    # print((dPs[i] @ dxs[j]))
+                    # print("error:", err(dPdx[i * n_segments + j], dPs[i] @ dxs[j]))
+                    # print("dPdxT")
+                    # print(dPdxT[i * n_segments + j])
+                    # print((dPs[j] @ dxs[i]))
+                    # print("error:", err(dPdxT[i * n_segments + j], dPs[j] @ dxs[i]))
+                    # print(f"dATdy")
+                    # print(dATdy[i * n_segments + j])
+                    # print(dAi.T @ dys[j])
+                    # print(err(dATdy[i * n_segments + j], dAi.T @ dys[j]))
+                    # print(f"dATdyT")
+                    # print(dATdyT[i * n_segments + j])
+                    # print(dAj.T @ dys[i])
+                    # print(err(dATdyT[i * n_segments + j], dAj.T @ dys[i]))
+                    # print("ddPx")
+                    # print(ddPx[i * n_segments + j])
+                    # print(np.sum(ddPx[i * n_segments + j]))
+                    # print("ddATy")
+                    # print(ddATy[i * n_segments + j])
+                    # print(np.sum(ddATy[i * n_segments + j]))
+                    # print("b1")
+                    # print(b1_fast[i * n_segments + j])
+                    # print(b1)
+                    # print(err(b1_fast[i * n_segments + j], b1))
+                    # print("rhs")
+                    # print(rhs_fast[i * n_segments + j])
+                    # print(rhs)
+                    print(f"dim {dim}, error: {err(rhs_fast[i * n_segments + j], rhs)}")
+                    # print(xdPdx[j, i], x.T @ dPs[i] @ dxs[j])
+                    print(i, j)
+                    print(f"error: {err(xddPx[i, j], x.T @ ddPs[i] @ x)}")
+                    # print(xddPx[i, j])
+                    print(f"error: {err(xdPdx[j, i], x.T @ dPs[j] @ dxs[i])}")
+                    print(f"error: {err(xdPdx[i, j], x.T @ dPs[i] @ dxs[j])}")
+                    print(f"error: {err(dxPdx[i,j], dxs[i].T @ P @ dxs[j])}")
+                    print(f"error: {err(xPddx[i, j], x.T @ P @ ddx)}")
+                    print(f"error: {err(ddx[:,0], ddx_[i * n_segments + j])}")
                     ddF = (
                         dxs[j].T @ P @ dxs[i]
                         + x.T @ dPs[j] @ dxs[i]
@@ -486,6 +593,8 @@ class TimestampSolver(Solver):
 
                     H[dim, i, j] = ddF
                     H[dim, j, i] = ddF
+
+        print(f"H error: {err(H_, H)}")
 
         print(f"constr time: {constr_time}")
         print(f"matmul time: {matmul_time}")
@@ -638,6 +747,9 @@ class TimestampSolver(Solver):
             ddPs.append(dP)
         return np.array(ddPs)
 
+    def ddPTs(self, t):
+        return np.array([self.ddPT(T) for T in t])
+
     def ddPT(self, T):
         ddPT = np.zeros((self.d + 1, self.d + 1))
         for l in range(self.r, self.d + 1):
@@ -658,7 +770,7 @@ class NoTimestampSolver(Solver):
         self.timestamp_solver = TimestampSolver(d, r, q, dimensions)
         self.tol = tol
 
-    def solve(self, waypoints, T, lr=1):
+    def solve(self, waypoints, T, lr=0.3):
         self.waypoints = np.array(waypoints)
         dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
         t = T * dists / np.sum(dists)
@@ -813,7 +925,7 @@ class NoTimestampSolver(Solver):
         self.t = self.timestamp_solver.t
         return obj, self.intermediate_results
 
-    def solve_hybrid(self, waypoints, T, k=3, banded_hessian=False):
+    def solve_hybrid(self, waypoints, T, k=3, lr=0.3, banded_hessian=False):
         self.waypoints = np.array(waypoints)
 
         n = self.waypoints.shape[0] - 1
@@ -841,19 +953,30 @@ class NoTimestampSolver(Solver):
                 grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
                 grad = grad / np.linalg.norm(grad)
                 grad = grad - np.mean(grad)
-                t -= grad
+                t -= lr * grad
                 t = t / np.sum(t) * T
             else:
                 grad, H = self.timestamp_solver.grad_hess(self.waypoints, t)
+                self.timestamp_solver.grad_hess2(self.waypoints, t)
                 if banded_hessian:
                     H = self.banded(H)
-                # plt.imshow(H)
-                # plt.show()
+                sns.heatmap(
+                    H,
+                    annot=True,
+                    fmt=".2f",
+                    cmap="viridis",
+                    linewidths=0.5,
+                    square=True,
+                )
+
+                plt.title("Matrix Heatmap with Annotations")
+                plt.show()
+
                 grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
                 H_proj = P @ H @ P
 
                 dt = -solve(H_proj, grad_proj)
-                t += dt
+                t += lr * dt
                 t = t / np.sum(t) * T
 
             dif = abs(prev_obj - obj)
