@@ -16,8 +16,8 @@ if __name__ == "__main__":
         [0, 3, 2],
         [0, 1, 2],
     ]
-    n = 4
-    np.random.seed(3)
+    n = 40
+    np.random.seed(0)
     waypoints = (
         np.random.rand(n, 3) + np.array([np.arange(n), np.zeros(n), np.zeros(n)]).T
     )
@@ -30,15 +30,15 @@ if __name__ == "__main__":
     travel time is 11s
     """
 
-    solver = NoTimestampSolver(d=7, r=3, q=3, dimensions=1)
+    solver = NoTimestampSolver(d=9, r=3, q=3, dimensions=3)
     """obj_hess, intermediate_results_hess = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=True
     )"""
     # obj_hess, intermediate_results_hess = solver.solve_newton(waypoints, travel_time)
-    """start_time = time()
+    start_time = time()
     obj_jac, intermediate_results_jac = solver.solve(waypoints, travel_time)
     print(f"time: {time() - start_time}")
-    solver.show_path_3d(frame=0)"""
+    # solver.show_path_3d(frame=0)
     """obj_jac, intermediate_results_jac = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=False
     )"""
@@ -46,9 +46,11 @@ if __name__ == "__main__":
     """obj, intermediate_results = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=True
     )"""
+    # solver.show_path_3d(frame=0)
+
     start_time = time()
     obj_hybrid, intermediate_results_hybrid = solver.solve_hybrid(
-        waypoints, travel_time, k=2, banded_hessian=False
+        waypoints, travel_time, k=5, banded_hessian=False
     )
     print(f"time: {time() - start_time}")
     """plt.plot(
@@ -73,12 +75,15 @@ if __name__ == "__main__":
     plt.plot(
         range(len(intermediate_results_hybrid)),
         intermediate_results_hybrid,
-        label="hybrid",
+        label="newton (hybrid)",
         color="red",
         marker="x",
     )
     # plt.ylim([0.98 * min(intermediate_results_hybrid), 1.2 * intermediate_results[1]])
     plt.legend()
-    plt.yscale("log")
+    # plt.yscale("log")
+    plt.title(f"num. waypoints: {n}")
+    plt.xlabel("iterations")
+    plt.ylabel("cost")
     plt.show()
     # solver.show_path()

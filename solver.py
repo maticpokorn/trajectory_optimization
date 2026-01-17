@@ -25,6 +25,8 @@ from scipy.sparse.linalg import spsolve, splu
 from scipy.sparse import csr_matrix, csc_matrix
 from scipy.optimize import minimize, LinearConstraint, Bounds
 import seaborn as sns
+import gurobipy as gp
+from gurobipy import GRB
 
 
 class Solver:
@@ -52,13 +54,18 @@ class Solver:
 
     def show_path_2d(self):
         coeffs = self.result
-        _, ax = plt.subplots()
+        _, ax = plt.subplots(figsize=(4, 6))
         # ax.plot(self.waypoints.T[0], self.waypoints.T[1], color="lime")
-        ax.scatter(self.waypoints.T[0], self.waypoints.T[1], color="red")
-        for p, label in zip(self.waypoints, self.timestamps):
-            plt.text(
-                p[0], p[1], str(round(label, 2)), fontsize=9, ha="right", va="bottom"
-            )
+        # ax.scatter(self.waypoints.T[0], self.waypoints.T[1], color="red")
+        """for i, p in enumerate(self.waypoints):
+            ax.text(
+                p[0],
+                p[1],
+                f"{np.sum(self.t[:i]):.2f}s ",
+                fontsize=9,
+                ha="right",
+                va="bottom",
+            )"""
         x = []
         y = []
         v = []
@@ -67,11 +74,11 @@ class Solver:
             py = np.poly1d(coeffs[1, i][::-1])
             dpx = np.poly1d((coeffs[0, i] * np.arange(self.d + 1))[1:][::-1])
             dpy = np.poly1d((coeffs[1, i] * np.arange(self.d + 1))[1:][::-1])
-            t = np.linspace(0, self.timestamps[i + 1] - self.timestamps[i], 100)
-            x.append(px(t))
-            y.append(py(t))
-            dx = dpx(t)
-            dy = dpy(t)
+            T = np.linspace(0, self.t[i], 100)
+            x.append(px(T))
+            y.append(py(T))
+            dx = dpx(T)
+            dy = dpy(T)
             v.append(np.sqrt((dx**2 + dy**2))[:-1])
 
         x = np.hstack(x)
@@ -79,10 +86,21 @@ class Solver:
         v = np.hstack(v)
         points = np.array([x, y]).T.reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        lc = LineCollection(segments, cmap="plasma", array=v / np.max(v), linewidth=2)
+        lc = LineCollection(segments, cmap="plasma", array=v, linewidth=2)
         ax.add_collection(lc)
-        plt.colorbar(lc, ax=ax, label="velocity")
+        plt.colorbar(
+            lc,
+            ax=ax,
+            label="Hitrost [m/s]",
+            orientation="horizontal",
+            pad=0.15,
+            shrink=0.95,
+            aspect=40.0,
+        )
         plt.axis("equal")
+        plt.title(f"Optimalna vrednost: {self.obj:.2f}")
+        plt.xlabel("x [m]")
+        plt.ylabel("y [m]")
         plt.show()
 
     def show_path_3d(self, frame):
@@ -205,6 +223,47 @@ class TimestampSolver(Solver):
             result[dim, :, :] = res_dim
             self.result = result
             self.obj += sol.info.obj_val
+        return self.obj
+
+    def solve_gurobi(self, waypts, t):
+        self.waypoints = np.array(waypts)
+        self.t = np.array(t)
+        self.n_segments = len(t)
+
+        self.obj = 0
+        self.nu = []
+        self.x = []
+
+        result = np.zeros((self.dimensions, self.n_segments, self.d + 1))
+        self.P_sp = self.P_sparse(self.t)
+        q = np.zeros(self.n_segments * (self.d + 1))
+        for dim in range(self.dimensions):
+            m = gp.Model("Trajectory_QP")
+            # Suppress all console output
+            m.Params.OutputFlag = 0
+            A, b = (
+                EqualityConstraintBuilder(self.waypoints[:, dim], self.d, self.q)
+                .build(self.t)
+                .matrix_sparse()
+            )
+            x = m.addMVar(
+                shape=self.n_segments * (self.d + 1), lb=-float("inf"), name="coeffs"
+            )
+
+            m.setObjective(0.5 * x @ self.P_sp @ x, GRB.MINIMIZE)
+
+            con = m.addConstr(A @ x == b, name="continuity_and_waypoints")
+
+            m.optimize()
+            if m.status == GRB.OPTIMAL:
+                res_dim = np.array(x.X).reshape((self.n_segments, self.d + 1))
+                self.x.append(np.array(x.X))
+                self.nu.append(np.array(con.Pi))
+                result[dim, :, :] = res_dim
+                self.result = result
+                self.obj += m.ObjVal
+            else:
+                print("solve failed")
         return self.obj
 
     def test_matrices(self, P, A, b):
@@ -348,6 +407,7 @@ class TimestampSolver(Solver):
         )
         dP = np.array(dPs)
         ddP = np.array(ddPs)
+
         ddPx = np.einsum("ijk,ij->ik", ddP, x)
         dPdx = np.einsum("ijk,ilj->ilk", dP, dx)
         ddATy = np.einsum("ijk,ij->ik", ddAs, y)
@@ -358,16 +418,9 @@ class TimestampSolver(Solver):
         ddPx = np.einsum("ij,ik->ijk", np.eye(n_segments), ddPx)
         ddATy = np.einsum("ij,ik->ijk", np.eye(n_segments), ddATy)
         ddAx = np.einsum("ij,ik->ijk", np.eye(n_segments), ddAx)
-
-        print(x.shape, dPdx.shape, ddPx.shape)
         xdPdx = np.einsum("kj,kij->ki", x, dPdx)
         xddPx = np.einsum("ij,kij->ki", x, ddPx)
 
-        # print(dx.shape, Ps.shape)
-        # Pdx = np.einsum("ikj,ilj->ilk", Ps, dx)
-        # print(dx.shape, Pdx.shape)
-        # dxPdx = np.einsum("ijk,ijl->ij", dx, Pdx)
-        # print(dxPdx.shape)
         dxPdx = np.einsum("kil, klm, kjm -> ij", dx, Ps, dx, optimize=True)
 
         k = np.arange(n_segments**2)
@@ -377,36 +430,42 @@ class TimestampSolver(Solver):
         dPdxT = dPdx[indices]
         dATdy = scipy.sparse.block_diag(dATdy, format="csr")
         dATdyT = dATdy[indices]
-        # ddPx_ddATy = scipy.sparse.block_diag(ddPx + ddATy, format="csr")
         ddPx = scipy.sparse.block_diag(ddPx, format="csr")
         ddATy = scipy.sparse.block_diag(ddATy, format="csr")
 
         b1 = dPdx + dPdxT + dATdy + dATdyT + ddPx + ddATy
 
-        # dPdx_dATdy = scipy.sparse.block_diag(dPdx + dATdy, format="csr")
-
-        # dPdxT_dATdyT = dPdx_dATdy[indices]
-        # b1 = dPdx_dATdy + dPdxT_dATdyT + ddPx_ddATy
-        """dPdx_dATdy_ddPx_ddATy = scipy.sparse.block_diag(
-            dPdx + dATdy + 0.5 * ddPx + ddATy, format="csr"
-        )"""
-        # b1 = dPdx_dATdy_ddPx_ddATy + dPdx_dATdy_ddPx_ddATy[indices]
-
         dAdx = scipy.sparse.block_diag(dAdx, format="csr")
         dAdxT = dAdx[indices]
         ddAx = scipy.sparse.block_diag(ddAx, format="csr")
         b2 = (dAdx + dAdxT + ddAx)[:, :-1]
-        # dAdx_ddAx = scipy.sparse.block_diag(dAdx + 0.5 * ddAx, format="csr")
-        # b2 = (dAdx_ddAx + dAdx_ddAx[indices])[:, :-1]
         mid = scipy.sparse.csr_matrix((n_segments * n_segments, self.q + 1))
         rhs = -scipy.sparse.hstack([b1, mid, b2], format="csr")
 
-        return rhs, xdPdx, xddPx, dPdx, dxPdx
+        return rhs, xdPdx, xddPx, dxPdx
 
-    def grad_hess2(self, waypts, t):
+    def banded_indices(self, bands=3):
+        # rhs is of shape n_segments * n_segments (1 for each entry of Hessian)
+        # we want only to solve for banded elements
+        # H[i,j] <-> rhs[n_segments * i + j]
+        Is = []
+        Js = []
+        Is.append(np.arange(self.n_segments))
+        Js.append(np.arange(self.n_segments))
+        for k in range(1, bands):
+            # lower band
+            Is.append(np.arange(k, self.n_segments))
+            Js.append(np.arange(self.n_segments - k))
+            # upper band
+            Is.append(np.arange(self.n_segments - k))
+            Js.append(np.arange(k, self.n_segments))
+        return np.concatenate(Is), np.concatenate(Js)
+
+    def grad_hess2(self, waypts, t, bands=None):
         n_segments = len(t)
+        H = np.zeros((self.dimensions, n_segments, n_segments))
         grad = np.zeros((self.dimensions, n_segments))
-        A, b = (
+        A, _ = (
             EqualityConstraintBuilder(waypts[:, 0], self.d, self.q)
             .build(t)
             .matrix_sparse()
@@ -422,50 +481,50 @@ class TimestampSolver(Solver):
             .constraints
         )
         Ps = np.array([self.PT(t) for t in self.t])
-        P = self.P_sparse(t)
         dPs = self.dPTs(t)
         ddPs = self.ddPTs(t)
 
-        K = bmat([[P, A.T], [A, None]], format="csc")
+        K = bmat([[self.P_sp, A.T], [A, None]], format="csc")
         lu = splu(K)
-        H = np.zeros((self.dimensions, n_segments, n_segments))
+
         for dim in range(self.dimensions):
-            start = time()
             x = self.x[dim]
             y = self.nu[dim]
             rhs, xdPx = self.build_rhs(n_segments, x, y, dPs, dAs)
             dxy = lu.solve(rhs.T.toarray())
             dx = dxy[: (self.d + 1) * n_segments]
             dy = dxy[(self.d + 1) * n_segments :]
-            grad[dim] = dx.T @ self.P_sparse(t) @ x + 1 / 2 * xdPx
-            print(f"time for grad: {time() - start}")
+            grad[dim] = dx.T @ self.P_sp @ x + 1 / 2 * xdPx
 
-            rhs, xdPdx, xddPx, dPdx, dxPdx = self.build_hess_rhs(
+            rhs, xdPdx, xddPx, dxPdx = self.build_hess_rhs(
                 n_segments, x, y, dx, dy, Ps, dPs, dAs, ddPs, ddAs
             )
-            rhs = rhs.toarray().T
-            # print(K.shape, rhs.shape)
-            # print(rhs[0])
-            ddxy = lu.solve(rhs).T
-            print(ddxy.shape)
-            # print(ddxy.shape)
-            ddx_ = ddxy[:, : (self.d + 1) * n_segments]
-            print(ddx_.shape)
-            ddx = ddx_.reshape((n_segments, n_segments, n_segments, self.d + 1))
+            # start = time()
+            if bands:
+                ddx = np.zeros((n_segments * n_segments, n_segments * (self.d + 1)))
+                Is, Js = self.banded_indices(bands)
+                rhs = rhs[Is * n_segments + Js].toarray().T
+                ddxy = lu.solve(rhs).T
+                ddx[Is * n_segments + Js] = ddxy[:, : (self.d + 1) * n_segments]
+            else:
+                rhs = rhs.toarray().T
+                ddxy = lu.solve(rhs).T
+                ddx = ddxy[:, : (self.d + 1) * n_segments]
+
+            # print(f"system solve time: {time() - start}")
+
+            ddx = ddx.reshape((n_segments, n_segments, n_segments, self.d + 1))
             x = x.reshape(n_segments, self.d + 1)
 
-            print(x.shape, Ps.shape, ddx.shape)
-            xPddx = np.einsum("kl, klm, ijkm -> ij", x, Ps, ddx, optimize=True)
+            xPddx = np.einsum("kl,klm,ijkm->ij", x, Ps, ddx, optimize=True)
 
             H[dim] = 1 / 2 * xddPx + xdPdx + xdPdx.T + dxPdx + xPddx
 
-            return rhs.T, xdPdx, xddPx, dPdx, dxPdx, xPddx, ddx_, np.sum(H, axis=0)
+        return np.sum(grad, axis=0), np.sum(H, axis=0)
 
     def grad_hess(self, waypts, t):
         start = time()
-        rhs_fast, xdPdx, xddPx, dPdx, dxPdx, xPddx, ddx_, H_ = self.grad_hess2(
-            waypts, t
-        )
+        grad_, H_ = self.grad_hess2(waypts, t)
         print(f"time for fast hess: {time() - start}")
         n_segments = len(t)
         grad = np.zeros((self.dimensions, n_segments))
@@ -572,16 +631,16 @@ class TimestampSolver(Solver):
                     # print("rhs")
                     # print(rhs_fast[i * n_segments + j])
                     # print(rhs)
-                    print(f"dim {dim}, error: {err(rhs_fast[i * n_segments + j], rhs)}")
+                    # print(f"dim {dim}, error: {err(rhs_fast[i * n_segments + j], rhs)}")
                     # print(xdPdx[j, i], x.T @ dPs[i] @ dxs[j])
-                    print(i, j)
-                    print(f"error: {err(xddPx[i, j], x.T @ ddPs[i] @ x)}")
+                    # print(i, j)
+                    # print(f"error: {err(xddPx[i, j], x.T @ ddPs[i] @ x)}")
                     # print(xddPx[i, j])
-                    print(f"error: {err(xdPdx[j, i], x.T @ dPs[j] @ dxs[i])}")
-                    print(f"error: {err(xdPdx[i, j], x.T @ dPs[i] @ dxs[j])}")
-                    print(f"error: {err(dxPdx[i,j], dxs[i].T @ P @ dxs[j])}")
-                    print(f"error: {err(xPddx[i, j], x.T @ P @ ddx)}")
-                    print(f"error: {err(ddx[:,0], ddx_[i * n_segments + j])}")
+                    # print(f"error: {err(xdPdx[j, i], x.T @ dPs[j] @ dxs[i])}")
+                    # print(f"error: {err(xdPdx[i, j], x.T @ dPs[i] @ dxs[j])}")
+                    # print(f"error: {err(dxPdx[i,j], dxs[i].T @ P @ dxs[j])}")
+                    # print(f"error: {err(xPddx[i, j], x.T @ P @ ddx)}")
+                    # print(f"error: {err(ddx[:,0], ddx_[i * n_segments + j])}")
                     ddF = (
                         dxs[j].T @ P @ dxs[i]
                         + x.T @ dPs[j] @ dxs[i]
@@ -594,7 +653,7 @@ class TimestampSolver(Solver):
                     H[dim, i, j] = ddF
                     H[dim, j, i] = ddF
 
-        print(f"H error: {err(H_, H)}")
+        # print(f"H error: {err(H_, H)}")
 
         print(f"constr time: {constr_time}")
         print(f"matmul time: {matmul_time}")
@@ -765,10 +824,20 @@ class TimestampSolver(Solver):
 
 
 class NoTimestampSolver(Solver):
-    def __init__(self, d, r, q, dimensions, tol=0.01):
+    def __init__(self, d, r, q, dimensions, tol=0.1):
         super().__init__(d, r, q, dimensions)
         self.timestamp_solver = TimestampSolver(d, r, q, dimensions)
         self.tol = tol
+
+    def eval(self, t):
+        print(f"min t: {np.min(t)}")
+        start = time()
+        y = self.timestamp_solver.solve_sparse(self.waypoints, t)
+        print(f"time for QP: {time() - start}")
+        start = time()
+        self.J, self.H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=5)
+        print(f"time for jac, hess: {time() - start}")
+        return y
 
     def solve(self, waypoints, T, lr=0.3):
         self.waypoints = np.array(waypoints)
@@ -783,7 +852,7 @@ class NoTimestampSolver(Solver):
         self.intermediate_results = []
         while dif > self.tol and i < 50:
             # start_time = time()
-            obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
+            obj = self.timestamp_solver.solve_gurobi(self.waypoints, t)
             self.intermediate_results.append(obj)
             # print(f"time for qp solve: {time() - start_time}")
             # grad = self.timestamp_solver.grad(self.waypoints, t)
@@ -819,14 +888,14 @@ class NoTimestampSolver(Solver):
         n = self.waypoints.shape[0] - 1
         lc = LinearConstraint(np.ones(n), -np.inf, T)
         bounds = Bounds(np.zeros(n), np.inf)
-        options = {"maxiter": 10, "verbose": 3}
+        options = {"maxiter": 20, "verbose": 3, "xtol": self.tol}
         if use_hess:
             res = minimize(
-                fun=lambda t: self.timestamp_solver.solve(self.waypoints, t),
+                fun=lambda t: self.eval(t),
                 x0=t,
                 method="trust-constr",
-                jac=lambda t: self.timestamp_solver.grad(self.waypoints, t),
-                hess=lambda t: self.timestamp_solver.hess(self.waypoints, t),
+                jac=lambda t: self.J,
+                hess=lambda t: self.H,
                 bounds=bounds,
                 constraints=[lc],
                 options=options,
@@ -943,34 +1012,43 @@ class NoTimestampSolver(Solver):
         i = 0
         self.intermediate_results = []
         while dif > self.tol and i < 20:
+            # print(f"min t: {np.min(t)}")
             # start_time = time()
-            obj = self.timestamp_solver.solve(self.waypoints, t)
+            obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
             self.intermediate_results.append(obj)
             # print(f"time for qp solve: {time() - start_time}")
 
             if i < k:
-                grad = self.timestamp_solver.grad(self.waypoints, t)
+                grad = self.timestamp_solver.grad2(self.waypoints, t)
                 grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
                 grad = grad / np.linalg.norm(grad)
                 grad = grad - np.mean(grad)
                 t -= lr * grad
                 t = t / np.sum(t) * T
             else:
-                grad, H = self.timestamp_solver.grad_hess(self.waypoints, t)
-                self.timestamp_solver.grad_hess2(self.waypoints, t)
+                # grad2 = self.timestamp_solver.grad2(self.waypoints, t)
+                grad, H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=4)
+                """grad_, H_ = self.timestamp_solver.grad_hess(self.waypoints, t)
+                print(
+                    f"error: grad: {np.median(np.abs(grad - grad_))}, hess: {np.mean(np.abs(H - H_))}"
+                )
+                print(f"error: grad: {np.mean(np.abs(grad - grad2))}")"""
+                # self.timestamp_solver.grad_hess2(self.waypoints, t)
                 if banded_hessian:
                     H = self.banded(H)
-                sns.heatmap(
+                """sns.heatmap(
                     H,
-                    annot=True,
+                    annot=False,
                     fmt=".2f",
                     cmap="viridis",
                     linewidths=0.5,
                     square=True,
-                )
+                )"""
+                """plt.imshow(H)
+                plt.colorbar()
 
-                plt.title("Matrix Heatmap with Annotations")
-                plt.show()
+                plt.title("Hessian matrix heatmap")
+                plt.show()"""
 
                 grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
                 H_proj = P @ H @ P
