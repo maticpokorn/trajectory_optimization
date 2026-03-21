@@ -29,6 +29,52 @@ import gurobipy as gp
 from gurobipy import GRB
 
 
+class Trajectory:
+    def __init__(self, coeffs, t):
+        self.coeffs = coeffs
+        self.t = t
+        pxs = []
+        pys = []
+        pzs = []
+        for i in range(coeffs.shape[1]):
+            px = np.poly1d(coeffs[0, i][::-1])
+            py = np.poly1d(coeffs[1, i][::-1])
+            pz = np.poly1d(coeffs[2, i][::-1])
+            pxs.append(px)
+            pys.append(py)
+            pzs.append(pz)
+        self.pxs = pxs
+        self.pys = pys
+        self.pzs = pzs
+
+    def evaluate(self, t):
+        # The timestamps t are the durations of each segment.
+        # We need to find which segment the time t falls into.
+        cumulative_time = 0
+        for i in range(len(self.t)):
+            segment_duration = self.t[i]
+            if t <= cumulative_time + segment_duration:
+                # Time within the segment
+                time_in_segment = t - cumulative_time
+                return np.array(
+                    [
+                        self.pxs[i](time_in_segment),
+                        self.pys[i](time_in_segment),
+                        self.pzs[i](time_in_segment),
+                    ]
+                )
+            cumulative_time += segment_duration
+
+        # If t is beyond the total travel time, return the position at the very end.
+        return np.array(
+            [
+                self.pxs[-1](self.t[-1]),
+                self.pys[-1](self.t[-1]),
+                self.pzs[-1](self.t[-1]),
+            ]
+        )
+
+
 class Solver:
     def __init__(self, d, r, q, dimensions=2):
         # degree of polynomials
@@ -197,33 +243,44 @@ class TimestampSolver(Solver):
         return self.obj
 
     def solve_sparse(self, waypts, t):
-        self.waypoints = np.array(waypts)
-        self.t = np.array(t)
-        self.n_segments = len(t)
+        try:
+            self.waypoints = np.array(waypts)
+            self.t = np.array(t)
+            self.n_segments = len(t)
+            self.obj = 0
+            self.nu = []
+            self.x = []
 
-        self.obj = 0
-        self.nu = []
-        self.x = []
+            result = np.zeros((self.dimensions, self.n_segments, self.d + 1))
+            self.P_sp = self.P_sparse(self.t)
+            q = np.zeros(self.n_segments * (self.d + 1))
 
-        result = np.zeros((self.dimensions, self.n_segments, self.d + 1))
-        self.P_sp = self.P_sparse(self.t)
-        q = np.zeros(self.n_segments * (self.d + 1))
-        for dim in range(self.dimensions):
-            A, b = (
-                EqualityConstraintBuilder(self.waypoints[:, dim], self.d, self.q)
-                .build(self.t)
-                .matrix_sparse()
-            )
-            prob = osqp.OSQP()
-            prob.setup(P=self.P_sp, q=q, A=A, l=b, u=b, verbose=False)
-            sol = prob.solve()
-            res_dim = np.array(sol.x).reshape((self.n_segments, self.d + 1))
-            self.x.append(np.array(sol.x))
-            self.nu.append(np.array(sol.y))
-            result[dim, :, :] = res_dim
+            for dim in range(self.dimensions):
+                # Build constraints
+                A, b = (
+                    EqualityConstraintBuilder(self.waypoints[:, dim], self.d, self.q)
+                    .build(self.t)
+                    .matrix_sparse()
+                )
+
+                prob = osqp.OSQP()
+                prob.setup(P=self.P_sp, q=q, A=A, l=b, u=b, verbose=False)
+                sol = prob.solve()
+
+                res_dim = np.array(sol.x).reshape((self.n_segments, self.d + 1))
+
+                self.x.append(np.array(sol.x))
+                self.nu.append(np.array(sol.y))
+                result[dim, :, :] = res_dim
+                self.obj += sol.info.obj_val
+
+            if self.obj < 0.1:
+                return np.inf
             self.result = result
-            self.obj += sol.info.obj_val
-        return self.obj
+            return self.obj
+        except Exception as e:
+            print(f"Trajectory Optimization failed: {e}")
+            return np.inf
 
     def solve_gurobi(self, waypts, t):
         self.waypoints = np.array(waypts)
@@ -567,7 +624,7 @@ class TimestampSolver(Solver):
                 dxy = lu.solve(rhs)
                 dx = dxy[: (self.d + 1) * n_segments][:, np.newaxis]
                 dy = dxy[(self.d + 1) * n_segments :]  # [:, np.newaxis]
-                dxs[i] = dx[:, 0]
+                dxs[i] = dx
                 dys[i] = dy
 
                 dF = dx.T @ P @ x + 1 / 2 * x.T @ dP @ x
@@ -582,7 +639,6 @@ class TimestampSolver(Solver):
                 for j in range(i, n_segments):
                     dAj = dAs[j]
 
-                    start = time()
                     b1 = (
                         dPs[j] @ dxs[i]
                         + dPs[i] @ dxs[j]
@@ -593,54 +649,16 @@ class TimestampSolver(Solver):
                     if i == j:
                         b1 += ddPs[i] @ x + ddAs[i].T @ y
                         b2 += ddAs[i] @ x
-                    matmul_time += time() - start
 
                     rhs = -np.concatenate((b1, b2))
-                    # print(i, j, np.mean(np.abs(rhs - rhs_fast[j * n_segments + i])))
-
+                    # ddxy = spsolve(A=K, b=rhs)
                     ddxy = lu.solve(rhs)
-                    ddx = ddxy[: (self.d + 1) * n_segments][:, np.newaxis]
 
-                    err = lambda x, y: np.sum(np.abs(x - y))
-                    # print(f"dPdx {i} {j}:")
-                    # print(dPdx[i * n_segments + j])
-                    # print((dPs[i] @ dxs[j]))
-                    # print("error:", err(dPdx[i * n_segments + j], dPs[i] @ dxs[j]))
-                    # print("dPdxT")
-                    # print(dPdxT[i * n_segments + j])
-                    # print((dPs[j] @ dxs[i]))
-                    # print("error:", err(dPdxT[i * n_segments + j], dPs[j] @ dxs[i]))
-                    # print(f"dATdy")
-                    # print(dATdy[i * n_segments + j])
-                    # print(dAi.T @ dys[j])
-                    # print(err(dATdy[i * n_segments + j], dAi.T @ dys[j]))
-                    # print(f"dATdyT")
-                    # print(dATdyT[i * n_segments + j])
-                    # print(dAj.T @ dys[i])
-                    # print(err(dATdyT[i * n_segments + j], dAj.T @ dys[i]))
-                    # print("ddPx")
-                    # print(ddPx[i * n_segments + j])
-                    # print(np.sum(ddPx[i * n_segments + j]))
-                    # print("ddATy")
-                    # print(ddATy[i * n_segments + j])
-                    # print(np.sum(ddATy[i * n_segments + j]))
-                    # print("b1")
-                    # print(b1_fast[i * n_segments + j])
-                    # print(b1)
-                    # print(err(b1_fast[i * n_segments + j], b1))
-                    # print("rhs")
-                    # print(rhs_fast[i * n_segments + j])
-                    # print(rhs)
-                    # print(f"dim {dim}, error: {err(rhs_fast[i * n_segments + j], rhs)}")
-                    # print(xdPdx[j, i], x.T @ dPs[i] @ dxs[j])
-                    # print(i, j)
-                    # print(f"error: {err(xddPx[i, j], x.T @ ddPs[i] @ x)}")
-                    # print(xddPx[i, j])
-                    # print(f"error: {err(xdPdx[j, i], x.T @ dPs[j] @ dxs[i])}")
-                    # print(f"error: {err(xdPdx[i, j], x.T @ dPs[i] @ dxs[j])}")
-                    # print(f"error: {err(dxPdx[i,j], dxs[i].T @ P @ dxs[j])}")
-                    # print(f"error: {err(xPddx[i, j], x.T @ P @ ddx)}")
-                    # print(f"error: {err(ddx[:,0], ddx_[i * n_segments + j])}")
+                    # print("accuracy: ", np.mean(K @ ddxy - rhs))
+                    ddx = ddxy[: (self.d + 1) * n_segments][:, np.newaxis]
+                    # print(ddx.shape)
+                    # ddy = ddxy[(self.d + 1) * n_segments :][:, np.newaxis]
+
                     ddF = (
                         dxs[j].T @ P @ dxs[i]
                         + x.T @ dPs[j] @ dxs[i]
@@ -834,10 +852,38 @@ class NoTimestampSolver(Solver):
         start = time()
         y = self.timestamp_solver.solve_sparse(self.waypoints, t)
         print(f"time for QP: {time() - start}")
+        if y == np.inf:
+            return np.inf
         start = time()
-        self.J, self.H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=5)
+        self.J, self.H = self.timestamp_solver.grad_hess2(self.waypoints, t)
         print(f"time for jac, hess: {time() - start}")
         return y
+
+    def solve_trust_constr(self, waypoints, T):
+        self.intermediate_results = []
+        self.waypoints = np.array(waypoints)
+        dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+        t = T * dists / np.sum(dists)
+        n = self.waypoints.shape[0] - 1
+        lc = LinearConstraint(np.ones(n), -np.inf, T)
+        bounds = Bounds(np.zeros(n), np.inf)
+        options = {"maxiter": 20, "verbose": 3, "xtol": self.tol, "gtol": 1e-1}
+        res = minimize(
+            fun=lambda t: self.eval(t),
+            x0=t,
+            method="trust-constr",
+            jac=lambda t: self.J,
+            hess=lambda t: self.H,
+            bounds=bounds,
+            constraints=[lc],
+            options=options,
+            callback=self.callback,
+        )
+        self.obj = res.fun
+        self.x = self.timestamp_solver.x
+        self.result = self.timestamp_solver.result
+        self.t = self.timestamp_solver.t
+        return self.obj, self.intermediate_results
 
     def solve(self, waypoints, T, lr=0.3):
         self.waypoints = np.array(waypoints)
@@ -1056,6 +1102,142 @@ class NoTimestampSolver(Solver):
                 dt = -solve(H_proj, grad_proj)
                 t += lr * dt
                 t = t / np.sum(t) * T
+
+            dif = abs(prev_obj - obj)
+            prev_obj = obj
+            i += 1
+            print(obj)
+
+        print(f"iter: {i}")
+        self.obj = obj
+        self.x = self.timestamp_solver.obj
+        self.result = self.timestamp_solver.result
+        self.t = self.timestamp_solver.t
+        return obj, self.intermediate_results
+
+    def solve_backtracking_line_search(
+        self, waypoints, T, tau=0.5, c=0.5, bands=None, intermediate_traj=False
+    ):
+
+        self.waypoints = np.array(waypoints)
+
+        n = self.waypoints.shape[0] - 1
+        normal = np.ones(n)
+        normal_ = np.ones(n)[:, np.newaxis]
+        P = np.eye(n) - (normal_ @ normal_.T) / normal @ normal
+
+        dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+        t = T * dists / np.sum(dists)
+
+        prev_obj = 1e12
+        dif = 1e12
+        i = 0
+        self.intermediate_results = []
+        intermediate_trajs = []
+        while dif > self.tol and i < 20:
+            obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
+            self.intermediate_results.append(obj)
+
+            grad, H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=bands)
+            grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
+            grad = grad / np.linalg.norm(grad)
+            dt_grad = grad - np.mean(grad)
+            m_grad = dt_grad @ dt_grad
+
+            H_proj = P @ H @ P
+
+            dt_hess = -solve(H_proj, grad_proj)
+            m_hess = dt_hess @ grad_proj
+
+            alpha = 1.0
+            for _ in range(20):
+                t_grad = t - alpha * dt_grad
+                t_grad = t_grad / np.sum(t_grad) * T
+                obj_grad = self.timestamp_solver.solve_sparse(self.waypoints, t_grad)
+                traj_grad = Trajectory(
+                    self.timestamp_solver.result, self.timestamp_solver.t
+                )
+
+                t_hess = t + alpha * dt_hess
+                t_hess = t_hess / np.sum(t_hess) * T
+                obj_hess = self.timestamp_solver.solve_sparse(self.waypoints, t_hess)
+                traj_hess = Trajectory(
+                    self.timestamp_solver.result, self.timestamp_solver.t
+                )
+
+                if (
+                    obj_grad < obj + c * alpha * m_grad
+                    or obj_hess < obj + c * alpha * m_hess
+                ):
+                    if obj_hess < obj_grad:
+                        t = t_hess
+                        obj = obj_hess
+                        print(
+                            f"used hess with alpha {alpha} by {obj_grad - obj_hess:<.4f}"
+                        )
+                        if intermediate_traj:
+                            intermediate_trajs.append(traj_hess)
+                    else:
+                        t = t_grad
+                        obj = obj_grad
+                        print(
+                            f"used grad with alpha {alpha} by {obj_hess - obj_grad:<.4f}"
+                        )
+                        if intermediate_traj:
+                            intermediate_trajs.append(traj_grad)
+
+                    break
+
+                alpha *= tau
+
+            dif = abs(prev_obj - obj)
+            prev_obj = obj
+
+            i += 1
+            print(obj)
+
+        print(f"iter: {i}")
+        self.obj = obj
+        self.x = self.timestamp_solver.obj
+        self.result = self.timestamp_solver.result
+        self.t = self.timestamp_solver.t
+        return obj, self.intermediate_results, intermediate_trajs
+
+    def solve_backtracking_line_search_grad(self, waypoints, T, tau=0.5, c=0.0):
+
+        self.waypoints = np.array(waypoints)
+
+        n = self.waypoints.shape[0] - 1
+        normal = np.ones(n)
+
+        dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+        t = T * dists / np.sum(dists)
+
+        prev_obj = 1e12
+        dif = 1e12
+        i = 0
+        self.intermediate_results = []
+        while dif > self.tol and i < 20:
+            obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
+            self.intermediate_results.append(obj)
+
+            grad, _ = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=4)
+            grad = grad / np.linalg.norm(grad)
+            dt_grad = grad - np.mean(grad)
+            m_grad = dt_grad @ dt_grad
+
+            alpha = 1.0
+            for _ in range(20):
+                t_grad = t - alpha * dt_grad
+                t_grad = t_grad / np.sum(t_grad) * T
+                obj_grad = self.timestamp_solver.solve_sparse(self.waypoints, t_grad)
+
+                if obj_grad < obj + c * alpha * m_grad:
+                    t = t_grad
+                    obj = obj_grad
+                    break
+
+                alpha *= tau
 
             dif = abs(prev_obj - obj)
             prev_obj = obj

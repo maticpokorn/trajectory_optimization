@@ -4,7 +4,7 @@ from time import time
 import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
-    waypoints = [
+    """waypoints = [
         [1, 0, 0],
         [2, -1, 1],
         [2, 0, 2],
@@ -16,11 +16,13 @@ if __name__ == "__main__":
         [0, 3, 2],
         [0, 1, 2],
     ]
-    n = 40
-    np.random.seed(0)
-    waypoints = (
-        np.random.rand(n, 3) + np.array([np.arange(n), np.zeros(n), np.zeros(n)]).T
-    )
+    n = len(waypoints)
+    travel_time = 10"""
+    n = 20
+    np.random.seed(1)
+    waypoints = np.random.rand(
+        n, 3
+    )  # + np.array([np.arange(n), np.arange(n), np.arange(n)]).T
     travel_time = n
     """
     create trajectory of polynomial splines of degree 7
@@ -30,7 +32,7 @@ if __name__ == "__main__":
     travel time is 11s
     """
 
-    solver = NoTimestampSolver(d=9, r=3, q=3, dimensions=3)
+    solver = NoTimestampSolver(d=7, r=3, q=3, dimensions=3)
     """obj_hess, intermediate_results_hess = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=True
     )"""
@@ -48,10 +50,26 @@ if __name__ == "__main__":
     )"""
     # solver.show_path_3d(frame=0)
 
-    start_time = time()
+    """start_time = time()
     obj_hybrid, intermediate_results_hybrid = solver.solve_hybrid(
         waypoints, travel_time, k=5, banded_hessian=False
     )
+    print(f"time: {time() - start_time}")"""
+    print("started backtracking line search")
+    start_time = time()
+    obj_line, intermediate_results_line = solver.solve_backtracking_line_search(
+        waypoints, travel_time, tau=0.5, c=0.5
+    )
+    print(f"time: {time() - start_time}")
+
+    obj_line_grad, intermediate_results_line_grad = (
+        solver.solve_backtracking_line_search_grad(
+            waypoints, travel_time, tau=0.5, c=0.5
+        )
+    )
+
+    start_time = time()
+    obj_tc, intermediate_results_tc = solver.solve_trust_constr(waypoints, travel_time)
     print(f"time: {time() - start_time}")
     """plt.plot(
         range(len(intermediate_results_hess)),
@@ -72,11 +90,32 @@ if __name__ == "__main__":
         color="lime",
         marker="x",
     )"""
-    plt.plot(
+    """plt.plot(
         range(len(intermediate_results_hybrid)),
         intermediate_results_hybrid,
         label="newton (hybrid)",
         color="red",
+        marker="x",
+    )"""
+    plt.plot(
+        range(len(intermediate_results_line)),
+        intermediate_results_line,
+        label="newton (backtracking line search)",
+        color="lime",
+        marker="x",
+    )
+    plt.plot(
+        range(len(intermediate_results_line_grad)),
+        intermediate_results_line_grad,
+        label="gradient (backtracking line search)",
+        color="red",
+        marker="x",
+    )
+    plt.plot(
+        range(len(intermediate_results_tc)),
+        intermediate_results_tc,
+        label="trust-constr",
+        color="purple",
         marker="x",
     )
     # plt.ylim([0.98 * min(intermediate_results_hybrid), 1.2 * intermediate_results[1]])

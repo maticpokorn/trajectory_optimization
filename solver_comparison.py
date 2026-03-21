@@ -27,10 +27,10 @@ waypoints = [
 t = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 T = 6
 
-tsolver = TimestampSolver(7, 3, 3, 2)
+tsolver = TimestampSolver(9, 3, 3, 2)
 tsolver.solve_sparse(waypoints, t)
 tsolver.show_path()
 
-ntsolver = NoTimestampSolver(7, 3, 3, 2)
+ntsolver = NoTimestampSolver(9, 3, 3, 2)
 ntsolver.solve_hybrid(waypoints, T, k=10)
 ntsolver.show_path()
