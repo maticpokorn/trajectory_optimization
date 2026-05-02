@@ -2,6 +2,10 @@ from solver import NoTimestampSolver
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Configure matplotlib to use LaTeX fonts
+plt.rcParams["text.usetex"] = True
+plt.rcParams["font.family"] = "serif"
+
 waypoints = [
     [0, 0, 0],
     [8, 4, 0],

@@ -18,8 +18,8 @@ if __name__ == "__main__":
     ]
     n = len(waypoints)
     travel_time = 10"""
-    n = 20
-    np.random.seed(1)
+    n = 40
+    np.random.seed(0)
     waypoints = np.random.rand(
         n, 3
     )  # + np.array([np.arange(n), np.arange(n), np.arange(n)]).T
@@ -39,15 +39,17 @@ if __name__ == "__main__":
     # obj_hess, intermediate_results_hess = solver.solve_newton(waypoints, travel_time)
     start_time = time()
     obj_jac, intermediate_results_jac = solver.solve(waypoints, travel_time)
-    print(f"time: {time() - start_time}")
+    time_gradient = time() - start_time
+    print(f"time gradient descent: {time_gradient}")
     # solver.show_path_3d(frame=0)
     """obj_jac, intermediate_results_jac = solver.solve_scipy(
         waypoints, travel_time, use_jac=True, use_hess=False
     )"""
 
-    """obj, intermediate_results = solver.solve_scipy(
-        waypoints, travel_time, use_jac=True, use_hess=True
-    )"""
+    start_time = time()
+    obj, intermediate_results, _ = solver.solve_trust_constr(waypoints, travel_time)
+    time_scipy = time() - start_time
+    print(f"time scipy: {time_scipy}")
     # solver.show_path_3d(frame=0)
 
     """start_time = time()
@@ -57,20 +59,56 @@ if __name__ == "__main__":
     print(f"time: {time() - start_time}")"""
     print("started backtracking line search")
     start_time = time()
-    obj_line, intermediate_results_line = solver.solve_backtracking_line_search(
+    obj_line, intermediate_results_line, _, _ = solver.solve_backtracking_line_search(
         waypoints, travel_time, tau=0.5, c=0.5
     )
-    print(f"time: {time() - start_time}")
+    time_backtrack_newton = time() - start_time
+    print(f"time backtracking newton: {time_backtrack_newton}")
 
-    obj_line_grad, intermediate_results_line_grad = (
+    start_time = time()
+    obj_line_grad, intermediate_results_line_grad, _ = (
         solver.solve_backtracking_line_search_grad(
             waypoints, travel_time, tau=0.5, c=0.5
         )
     )
+    time_backtrack_grad = time() - start_time
+    print(f"time backtracking grad: {time_backtrack_grad}")
 
     start_time = time()
-    obj_tc, intermediate_results_tc = solver.solve_trust_constr(waypoints, travel_time)
-    print(f"time: {time() - start_time}")
+    obj_line_hess, intermediate_results_line_hess, _, _ = (
+        solver.solve_backtracking_line_search_hess(
+            waypoints, travel_time, tau=0.5, c=0.5
+        )
+    )
+    time_backtrack_hess = time() - start_time
+    print(f"time backtracking hess: {time_backtrack_hess}")
+
+    start_time = time()
+    obj_line_newton2, intermediate_results_line_newton2, _, _ = (
+        solver.solve_backtracking_line_search2(waypoints, travel_time, tau=0.5, c=0.5)
+    )
+    time_backtrack_newton2 = time() - start_time
+    print(f"time backtracking newton2: {time_backtrack_newton2}")
+
+    start_time = time()
+    obj_tc, intermediate_results_tc, _ = solver.solve_trust_constr(
+        waypoints, travel_time
+    )
+    time_trust_constr = time() - start_time
+    print(f"time trust-constr: {time_trust_constr}")
+    # Print execution time summary
+    print("\n" + "=" * 60)
+    print("EXECUTION TIME SUMMARY")
+    print("=" * 60)
+    print(f"Gradient Descent:                    {time_gradient:.4f}s")
+    print(f"Scipy (Hess + Jac):                  {time_scipy:.4f}s")
+    print(f"Backtracking Line Search (Newton):   {time_backtrack_newton:.4f}s")
+    print(f"Backtracking Line Search (Gradient): {time_backtrack_grad:.4f}s")
+    print(f"Backtracking Line Search (Hessian):  {time_backtrack_hess:.4f}s")
+    print(f"Backtracking Line Search (Newton2):  {time_backtrack_newton2:.4f}s")
+    print(f"Trust-Constr:                        {time_trust_constr:.4f}s")
+    print("=" * 60 + "\n")
+
     """plt.plot(
         range(len(intermediate_results_hess)),
         intermediate_results_hess,
@@ -83,13 +121,13 @@ if __name__ == "__main__":
         color="blue",
         marker="x",
     )
-    """plt.plot(
+    plt.plot(
         range(len(intermediate_results)),
         intermediate_results,
-        label="trust-constr: hess, jac",
-        color="lime",
-        marker="x",
-    )"""
+        label="scipy: hess, jac",
+        color="orange",
+        marker="o",
+    )
     """plt.plot(
         range(len(intermediate_results_hybrid)),
         intermediate_results_hybrid,
@@ -110,6 +148,20 @@ if __name__ == "__main__":
         label="gradient (backtracking line search)",
         color="red",
         marker="x",
+    )
+    plt.plot(
+        range(len(intermediate_results_line_hess)),
+        intermediate_results_line_hess,
+        label="hessian (backtracking line search)",
+        color="magenta",
+        marker="s",
+    )
+    plt.plot(
+        range(len(intermediate_results_line_newton2)),
+        intermediate_results_line_newton2,
+        label="newton2 (backtracking line search)",
+        color="cyan",
+        marker="d",
     )
     plt.plot(
         range(len(intermediate_results_tc)),

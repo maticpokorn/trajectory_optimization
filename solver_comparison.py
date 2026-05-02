@@ -1,10 +1,11 @@
 from solver import NoTimestampSolver, TimestampSolver
+import numpy as np
 
-# waypoints = [[0, 0.5], [-0.2, 0], [0, -0.5], [1, 0], [0.5, 0.5], [0.5, -1.5]]
+waypoints = [[0, 0.5], [-0.2, 0], [0, -0.5], [1, 0], [0.5, 0.5], [0.5, -1.5]]
 
 # waypoints = [[0, 0], [0, 1], [0.5, 0.5], [1, 1], [1, 0]]
 
-waypoints = [
+"""waypoints = [
     [-1, 1],
     [0, 1.1],
     [1, 1],
@@ -22,15 +23,15 @@ waypoints = [
     [3.5, 0.4],
     [3.5, 0],
     [5, 0],
-]
+]"""
 
-t = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-T = 6
+t = np.ones(len(waypoints) - 1)
+T = sum(t)
 
 tsolver = TimestampSolver(9, 3, 3, 2)
 tsolver.solve_sparse(waypoints, t)
-tsolver.show_path()
+tsolver.show_path_2d_latex(filename="qp_example.pdf")
 
 ntsolver = NoTimestampSolver(9, 3, 3, 2)
 ntsolver.solve_hybrid(waypoints, T, k=10)
-ntsolver.show_path()
+ntsolver.show_path_2d_latex(filename="bilevel_example.pdf")

@@ -1,5 +1,5 @@
 import numpy as np
-
+from scipy.optimize import linprog
 import osqp
 from cvxopt import matrix
 from cvxopt.solvers import qp
@@ -8,7 +8,24 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.linalg import solve
-from scipy.sparse import csr_matrix, bmat
+import sys
+import os
+from contextlib import contextmanager
+
+
+@contextmanager
+def suppress_stderr():
+    """Context manager to suppress stderr output."""
+    original_stderr = sys.stderr
+    try:
+        sys.stderr = open(os.devnull, "w")
+        yield
+    finally:
+        sys.stderr.close()
+        sys.stderr = original_stderr
+
+
+from scipy.sparse import block_diag, csr_matrix, bmat
 import scipy
 from constraint_builder import (
     LinearConstraintBuilder,
@@ -204,6 +221,347 @@ class Solver:
         # plt.close()
         plt.show()
 
+    def show_path_2d_latex(self, filename="trajectory_2d_velocity.pdf"):
+        """Plot 2D trajectory with velocity colormap using LaTeX fonts and export to PDF"""
+        plt.rc("text", usetex=True)
+        plt.rc("font", family="serif")
+
+        coeffs = self.result
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        x = []
+        y = []
+        v = []
+        for i in range(coeffs.shape[1]):
+            px = np.poly1d(coeffs[0, i][::-1])
+            py = np.poly1d(coeffs[1, i][::-1])
+            dpx = np.poly1d((coeffs[0, i] * np.arange(self.d + 1))[1:][::-1])
+            dpy = np.poly1d((coeffs[1, i] * np.arange(self.d + 1))[1:][::-1])
+            T = np.linspace(0, self.t[i], 100)
+            x.append(px(T))
+            y.append(py(T))
+            dx = dpx(T)
+            dy = dpy(T)
+            v.append(np.sqrt((dx**2 + dy**2))[:-1])
+
+        x = np.hstack(x)
+        y = np.hstack(y)
+        v = np.hstack(v)
+        points = np.array([x, y]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        lc = LineCollection(segments, cmap="plasma", array=v, linewidth=2)
+        ax.add_collection(lc)
+
+        # Add waypoints with cumulative time
+        waypoints_array = np.array(self.waypoints)
+        ax.scatter(
+            waypoints_array[:, 0],
+            waypoints_array[:, 1],
+            facecolors="none",
+            s=50,
+            zorder=5,
+            edgecolors="black",
+            linewidths=1.5,
+        )
+        for i, p in enumerate(self.waypoints):
+            cumulative_time = np.sum(self.t[:i])
+            # Calculate offset based on data range
+            x_range = max(waypoints_array[:, 0]) - min(waypoints_array[:, 0])
+            y_range = max(waypoints_array[:, 1]) - min(waypoints_array[:, 1])
+            offset = max(x_range, y_range) * 0.03
+            ax.text(
+                p[0] + offset,
+                p[1] + offset,
+                f"${cumulative_time:.2f}$ s",
+                fontsize=12,
+                ha="left",
+                va="bottom",
+            )
+
+        ax.autoscale()
+        # Add padding to axis limits and make square
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        x_margin = (xlim[1] - xlim[0]) * 0.1
+        y_margin = (ylim[1] - ylim[0]) * 0.1
+        x_range = (xlim[1] - xlim[0]) + 2 * x_margin
+        y_range = (ylim[1] - ylim[0]) + 2 * y_margin
+
+        # Use the larger range for both axes to create a square
+        max_range = max(x_range, y_range)
+        x_center = (xlim[0] + xlim[1]) / 2
+        y_center = (ylim[0] + ylim[1]) / 2
+
+        ax.set_xlim([x_center - max_range / 2, x_center + max_range / 2])
+        ax.set_ylim([y_center - max_range / 2, y_center + max_range / 2])
+        cbar = plt.colorbar(
+            lc,
+            ax=ax,
+            label=r"Hitrost [m/s]",
+            orientation="horizontal",
+            pad=0.15,
+            shrink=0.7,
+            aspect=60.0,
+        )
+        cbar.set_label(r"Hitrost [m/s]", fontsize=16)
+        cbar.ax.tick_params(labelsize=14)
+        ax.set_aspect("equal")
+        ax.set_title(f"Optimalna vrednost: {self.obj:.2f}", fontsize=18)
+        ax.set_xlabel(r"$x$ [m]", fontsize=16)
+        ax.set_ylabel(r"$y$ [m]", fontsize=16)
+        ax.tick_params(axis="both", which="major", labelsize=14)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(filename, bbox_inches="tight")
+        plt.show()
+
+    def show_path_3d_latex(self, frame=0, filename="trajectory_3d_velocity.pdf"):
+        """Plot 3D trajectory with velocity colormap using LaTeX fonts and export to PDF"""
+        plt.rc("text", usetex=True)
+        plt.rc("font", family="serif")
+
+        coeffs = self.result
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection="3d")
+
+        ax.scatter(
+            self.waypoints.T[0],
+            self.waypoints.T[1],
+            self.waypoints.T[2],
+            facecolors="none",
+            s=50,
+            zorder=5,
+            edgecolors="black",
+            linewidths=1.5,
+        )
+        for i, p in enumerate(self.waypoints):
+            cumulative_time = np.sum(self.t[:i])
+            # Calculate offset based on data range
+            x_range = x.max() - x.min()
+            y_range = y.max() - y.min()
+            z_range = z.max() - z.min()
+            offset = max(x_range, y_range, z_range) * 0.03
+            ax.text(
+                p[0] + offset,
+                p[1] + offset,
+                p[2] + offset,
+                f"${cumulative_time:.2f}$ s",
+                fontsize=12,
+                ha="left",
+                va="bottom",
+            )
+
+        x = []
+        y = []
+        z = []
+        v = []
+        for i in range(coeffs.shape[1]):
+            px = np.poly1d(coeffs[0, i][::-1])
+            py = np.poly1d(coeffs[1, i][::-1])
+            pz = np.poly1d(coeffs[2, i][::-1])
+            dpx = np.poly1d((coeffs[0, i] * np.arange(self.d + 1))[1:][::-1])
+            dpy = np.poly1d((coeffs[1, i] * np.arange(self.d + 1))[1:][::-1])
+            dpz = np.poly1d((coeffs[2, i] * np.arange(self.d + 1))[1:][::-1])
+            T = np.linspace(0, self.t[i], 100)
+            x.append(px(T))
+            y.append(py(T))
+            z.append(pz(T))
+            dx = dpx(T)
+            dy = dpy(T)
+            dz = dpz(T)
+            v.append(np.sqrt((dx**2 + dy**2 + dz**2))[:-1])
+
+        x = np.hstack(x)
+        y = np.hstack(y)
+        z = np.hstack(z)
+        v = np.hstack(v)
+        points = np.array([x, y, z]).T.reshape(-1, 1, 3)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        lc = Line3DCollection(segments, cmap="plasma", array=v, linewidth=2)
+        ax.add_collection(lc)
+
+        # Set limits based on actual data with padding
+        x_margin = (x.max() - x.min()) * 0.1
+        y_margin = (y.max() - y.min()) * 0.1
+        z_margin = (z.max() - z.min()) * 0.1
+        ax.set_xlim([x.min() - x_margin, x.max() + x_margin])
+        ax.set_ylim([y.min() - y_margin, y.max() + y_margin])
+        ax.set_zlim([z.min() - z_margin, z.max() + z_margin])
+
+        ax.view_init(elev=30, azim=frame)
+        cbar = plt.colorbar(lc, ax=ax, label=r"Hitrost [m/s]", pad=0.1, shrink=0.7)
+        cbar.set_label(r"Hitrost [m/s]", fontsize=16)
+        cbar.ax.tick_params(labelsize=12)
+        ax.set_box_aspect([1, 1, 1])
+        ax.set_xlabel(r"$x$ [m]", fontsize=14)
+        ax.set_ylabel(r"$y$ [m]", fontsize=14)
+        ax.set_zlabel(r"$z$ [m]", fontsize=14)
+        ax.set_title(f"Optimalna vrednost: {self.obj:.2f}", fontsize=16)
+        ax.tick_params(axis="both", which="major", labelsize=12)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(filename, bbox_inches="tight")
+        plt.show()
+
+    def show_path_colored_2d(self):
+        """Plot 2D trajectory with distinct colors for each segment and waypoint"""
+        plt.rc("text", usetex=True)
+        plt.rc("font", family="serif")
+
+        coeffs = self.result
+        _, ax = plt.subplots(figsize=(8, 8))
+
+        # Define colors for segments (RGB values converted to 0-1 scale)
+        segment_colors = [
+            (51 / 255, 153 / 255, 255 / 255),  # Block 1: Bright Blue
+            (255 / 255, 51 / 255, 255 / 255),  # Block 2: Bright Magenta
+            (255 / 255, 51 / 255, 51 / 255),  # Block 3: Bright Red
+            (51 / 255, 204 / 255, 51 / 255),  # Block 4: Bright Green
+            (51 / 255, 204 / 255, 51 / 255),  # Block 5: Bright Green
+            (255 / 255, 153 / 255, 51 / 255),  # Block 6: Bright Orange
+        ]
+
+        # Define colors for waypoints
+        waypoint_colors = [
+            "red",
+            "green",
+            "orange",
+            "purple",
+            "brown",
+            "pink",
+            "gray",
+            "olive",
+            "navy",
+            "teal",
+        ]
+
+        # Plot each segment with its own color
+        for i in range(coeffs.shape[1]):
+            px = np.poly1d(coeffs[0, i][::-1])
+            py = np.poly1d(coeffs[1, i][::-1])
+            T = np.linspace(0, self.t[i], 100)
+            x = px(T)
+            y = py(T)
+            color = segment_colors[i % len(segment_colors)]
+            ax.plot(x, y, color=color, linewidth=2, label=f"Segment {i+1}")
+
+            # Add segment time annotation at the middle of the segment
+            mid_x = px((2 - i) * self.t[i] / 3)
+            mid_y = py((2 - i) * self.t[i] / 3)
+            ax.text(
+                mid_x,
+                mid_y,
+                f"${self.t[i]:.2f}$ s",
+                fontsize=20,
+                ha="left",
+                va="center",
+            )
+
+        # Plot waypoints with distinct colors
+        for i, p in enumerate(self.waypoints):
+            color = waypoint_colors[i % len(waypoint_colors)]
+            ax.scatter(
+                p[0],
+                p[1],
+                color=color,
+                s=100,
+                zorder=5,
+            )
+            ax.text(p[0], p[1], f"  $P_{{{i+1}}}$", fontsize=22, ha="left", va="bottom")
+
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect("equal")
+        ax.set_xlabel(r"$x$ [m]", fontsize=20)
+        ax.set_ylabel(r"$y$ [m]", fontsize=20)
+        ax.set_title(f"Optimalna vrednost: {self.obj:.2f}", fontsize=24)
+        ax.legend(fontsize=18)
+        ax.tick_params(axis="both", which="major", labelsize=16)
+        plt.tight_layout()
+        plt.savefig("trajectory_2d.pdf", bbox_inches="tight")
+        plt.show()
+
+    def show_path_colored_3d(self, frame=0):
+        """Plot 3D trajectory with distinct colors for each segment and waypoint"""
+        plt.rc("text", usetex=True)
+        plt.rc("font", family="serif")
+
+        coeffs = self.result
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection="3d")
+
+        # Define colors for segments
+        segment_colors = [
+            "blue",
+            "magenta",
+            "cyan",
+            "orange",
+            "purple",
+            "brown",
+            "pink",
+            "gray",
+            "olive",
+            "navy",
+        ]
+
+        # Define colors for waypoints
+        waypoint_colors = [
+            "red",
+            "green",
+            "orange",
+            "purple",
+            "brown",
+            "pink",
+            "gray",
+            "olive",
+            "navy",
+            "teal",
+        ]
+
+        # Plot each segment with its own color
+        for i in range(coeffs.shape[1]):
+            px = np.poly1d(coeffs[0, i][::-1])
+            py = np.poly1d(coeffs[1, i][::-1])
+            pz = np.poly1d(coeffs[2, i][::-1])
+            T = np.linspace(0, self.t[i], 100)
+            x = px(T)
+            y = py(T)
+            z = pz(T)
+            color = segment_colors[i % len(segment_colors)]
+            ax.plot(x, y, z, color=color, linewidth=2, label=f"Segment {i+1}")
+
+        # Plot waypoints with distinct colors
+        for i, p in enumerate(self.waypoints):
+            color = waypoint_colors[i % len(waypoint_colors)]
+            ax.scatter(
+                p[0],
+                p[1],
+                p[2],
+                color=color,
+                s=100,
+                zorder=5,
+            )
+            ax.text(
+                p[0],
+                p[1],
+                p[2],
+                f"  $P_{{{i+1}}}$",
+                fontsize=14,
+                ha="left",
+                va="bottom",
+            )
+
+        ax.grid(True, alpha=0.3)
+        ax.set_box_aspect([1, 1, 1])
+        ax.set_xlabel(r"$x$ [m]", fontsize=12)
+        ax.set_ylabel(r"$y$ [m]", fontsize=12)
+        ax.set_zlabel(r"$z$ [m]", fontsize=12)
+        ax.set_title(f"Optimalna vrednost: {self.obj:.2f}", fontsize=18)
+        ax.view_init(elev=30, azim=frame)
+        ax.legend(fontsize=14)
+        plt.tight_layout()
+        plt.savefig("trajectory_3d.pdf", bbox_inches="tight")
+        plt.show()
+
 
 class TimestampSolver(Solver):
     def __init__(self, d, r, q, dimensions):
@@ -253,6 +611,7 @@ class TimestampSolver(Solver):
 
             result = np.zeros((self.dimensions, self.n_segments, self.d + 1))
             self.P_sp = self.P_sparse(self.t)
+            # print("P:", self.P_sp.toarray())
             q = np.zeros(self.n_segments * (self.d + 1))
 
             for dim in range(self.dimensions):
@@ -262,10 +621,12 @@ class TimestampSolver(Solver):
                     .build(self.t)
                     .matrix_sparse()
                 )
+                # print(f"A, b (dim = {dim}):", A.toarray(), b)
 
                 prob = osqp.OSQP()
-                prob.setup(P=self.P_sp, q=q, A=A, l=b, u=b, verbose=False)
-                sol = prob.solve()
+                with suppress_stderr():
+                    prob.setup(P=self.P_sp, q=q, A=A, l=b, u=b, verbose=False)
+                    sol = prob.solve()
 
                 res_dim = np.array(sol.x).reshape((self.n_segments, self.d + 1))
 
@@ -433,10 +794,12 @@ class TimestampSolver(Solver):
                 # print(dP @ x)
                 rhs = -np.concatenate((dP @ x + dA.T @ y, dA @ x))
                 dxy = lu.solve(rhs)
+                # print(f"dxy (dim={dim}, segment={i}): {dxy}")
                 # print("error: ", np.mean(np.abs(rhs_[i] - rhs)))
                 # print("error dxy: ", np.mean(np.abs(dxy_[:, i] - dxy)))
                 dx = dxy[: (self.d + 1) * n_segments][:, np.newaxis]
                 dF = dx.T @ P @ x + 1 / 2 * x.T @ dP @ x
+                print(f"grad (dim={dim}, segment={i}): {dF}")
                 # print("error F: ", np.sum(np.abs(dF - grad_[dim, i])))
                 grad[dim, i] = dF
             # print("for loop time: ", time() - start)
@@ -561,7 +924,9 @@ class TimestampSolver(Solver):
                 ddx = np.zeros((n_segments * n_segments, n_segments * (self.d + 1)))
                 Is, Js = self.banded_indices(bands)
                 rhs = rhs[Is * n_segments + Js].toarray().T
+                # start = time()
                 ddxy = lu.solve(rhs).T
+                # print(f"banded system solve time: {time() - start}")
                 ddx[Is * n_segments + Js] = ddxy[:, : (self.d + 1) * n_segments]
             else:
                 rhs = rhs.toarray().T
@@ -842,32 +1207,29 @@ class TimestampSolver(Solver):
 
 
 class NoTimestampSolver(Solver):
-    def __init__(self, d, r, q, dimensions, tol=0.1):
+    def __init__(self, d, r, q, dimensions, tol=0.01):
         super().__init__(d, r, q, dimensions)
         self.timestamp_solver = TimestampSolver(d, r, q, dimensions)
         self.tol = tol
 
     def eval(self, t):
-        print(f"min t: {np.min(t)}")
-        start = time()
         y = self.timestamp_solver.solve_sparse(self.waypoints, t)
-        print(f"time for QP: {time() - start}")
         if y == np.inf:
             return np.inf
-        start = time()
-        self.J, self.H = self.timestamp_solver.grad_hess2(self.waypoints, t)
-        print(f"time for jac, hess: {time() - start}")
+        self.J, self.H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=4)
         return y
 
     def solve_trust_constr(self, waypoints, T):
         self.intermediate_results = []
+        self.intermediate_times = []
+        self.start_time = time()
         self.waypoints = np.array(waypoints)
         dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
         t = T * dists / np.sum(dists)
         n = self.waypoints.shape[0] - 1
         lc = LinearConstraint(np.ones(n), -np.inf, T)
         bounds = Bounds(np.zeros(n), np.inf)
-        options = {"maxiter": 20, "verbose": 3, "xtol": self.tol, "gtol": 1e-1}
+        options = {"maxiter": 20, "verbose": 0, "xtol": self.tol, "gtol": 1e-1}
         res = minimize(
             fun=lambda t: self.eval(t),
             x0=t,
@@ -883,7 +1245,7 @@ class NoTimestampSolver(Solver):
         self.x = self.timestamp_solver.x
         self.result = self.timestamp_solver.result
         self.t = self.timestamp_solver.t
-        return self.obj, self.intermediate_results
+        return self.obj, self.intermediate_results, self.intermediate_times
 
     def solve(self, waypoints, T, lr=0.3):
         self.waypoints = np.array(waypoints)
@@ -917,9 +1279,9 @@ class NoTimestampSolver(Solver):
             prev_obj = obj
             # self.timestamp_solver.show_path(i)
             i += 1
-            print(obj)
+            # print(obj)
 
-        print(f"iter: {i}")
+        # print(f"iter: {i}")
         self.obj = obj
         self.x = self.timestamp_solver.obj
         self.result = self.timestamp_solver.result
@@ -928,13 +1290,15 @@ class NoTimestampSolver(Solver):
 
     def solve_scipy(self, waypoints, T, use_jac=False, use_hess=False):
         self.intermediate_results = []
+        self.intermediate_times = []
+        self.start_time = time()
         self.waypoints = np.array(waypoints)
         dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
         t = T * dists / np.sum(dists)
         n = self.waypoints.shape[0] - 1
         lc = LinearConstraint(np.ones(n), -np.inf, T)
         bounds = Bounds(np.zeros(n), np.inf)
-        options = {"maxiter": 20, "verbose": 3, "xtol": self.tol}
+        options = {"maxiter": 15, "verbose": 3, "xtol": self.tol}
         if use_hess:
             res = minimize(
                 fun=lambda t: self.eval(t),
@@ -973,11 +1337,12 @@ class NoTimestampSolver(Solver):
         self.x = self.timestamp_solver.obj
         self.result = self.timestamp_solver.result
         self.t = self.timestamp_solver.t
-        return self.obj, self.intermediate_results
+        return self.obj, self.intermediate_results, self.intermediate_times
 
     def callback(self, intermediate_result):
         self.intermediate_results.append(intermediate_result.fun)
-        print(f"{len(self.intermediate_results)}: {round(intermediate_result.fun, 4)}")
+        self.intermediate_times.append(time() - self.start_time)
+        # print(f"{len(self.intermediate_results)}: {round(intermediate_result.fun, 4)}")
 
     def solve_newton(self, waypoints, T, lr=1):
         self.waypoints = np.array(waypoints)
@@ -1025,15 +1390,15 @@ class NoTimestampSolver(Solver):
                 t_new = t_new / np.sum(t) * T
 
             t = t_new
-            print(lr)
+            # print(lr)
             # t *= T / np.sum(t)
             dif = abs(prev_obj - obj)
             prev_obj = obj
             # self.timestamp_solver.show_path(i)
             i += 1
-            print(obj)
+            # print(obj)
 
-        print(f"iter: {i}")
+        # print(f"iter: {i}")
         self.obj = obj
         self.x = self.timestamp_solver.obj
         self.result = self.timestamp_solver.result
@@ -1106,9 +1471,9 @@ class NoTimestampSolver(Solver):
             dif = abs(prev_obj - obj)
             prev_obj = obj
             i += 1
-            print(obj)
+            # print(obj)
 
-        print(f"iter: {i}")
+        # print(f"iter: {i}")
         self.obj = obj
         self.x = self.timestamp_solver.obj
         self.result = self.timestamp_solver.result
@@ -1116,7 +1481,7 @@ class NoTimestampSolver(Solver):
         return obj, self.intermediate_results
 
     def solve_backtracking_line_search(
-        self, waypoints, T, tau=0.5, c=0.5, bands=None, intermediate_traj=False
+        self, waypoints, T, tau=0.5, c=0.5, bands=None, intermediate_traj=False, x0=None
     ):
 
         self.waypoints = np.array(waypoints)
@@ -1124,33 +1489,49 @@ class NoTimestampSolver(Solver):
         n = self.waypoints.shape[0] - 1
         normal = np.ones(n)
         normal_ = np.ones(n)[:, np.newaxis]
-        P = np.eye(n) - (normal_ @ normal_.T) / normal @ normal
+        P = np.eye(n) - (normal_ @ normal_.T) / (normal @ normal)
 
-        dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
-        t = T * dists / np.sum(dists)
+        if x0 is not None:
+            t = np.array(x0)
+        else:
+            dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+            t = T * dists / np.sum(dists)
 
         prev_obj = 1e12
         dif = 1e12
         i = 0
         self.intermediate_results = []
+        self.intermediate_times = []
         intermediate_trajs = []
-        while dif > self.tol and i < 20:
+        start_time = time()
+        while dif > self.tol and i < 50:
             obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
             self.intermediate_results.append(obj)
+            self.intermediate_times.append(time() - start_time)
 
             grad, H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=bands)
+            """plt.imshow(H)
+            plt.colorbar()
+            plt.savefig("hessian.pdf")
+            plt.show()"""
             grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
-            grad = grad / np.linalg.norm(grad)
-            dt_grad = grad - np.mean(grad)
+            # print(f"projected gradient at t={t}: {grad_proj}")
+            # grad = grad / np.linalg.norm(grad)
+            # dt_grad = grad - np.mean(grad)
+            dt_grad = grad_proj / np.linalg.norm(grad_proj)
+            # print("normalized projected gradient: ", dt_grad)
             m_grad = dt_grad @ dt_grad
 
-            H_proj = P @ H @ P
+            # H_proj = P @ H @ P
 
-            dt_hess = -solve(H_proj, grad_proj)
+            K = bmat([[H, normal_], [normal_.T, np.zeros((1, 1))]], format="csr")
+            rhs = np.concatenate([-grad, [0]])
+            sol = solve(K.toarray(), rhs)
+            dt_hess = sol[:-1]
             m_hess = dt_hess @ grad_proj
 
             alpha = 1.0
-            for _ in range(20):
+            for _ in range(50):
                 t_grad = t - alpha * dt_grad
                 t_grad = t_grad / np.sum(t_grad) * T
                 obj_grad = self.timestamp_solver.solve_sparse(self.waypoints, t_grad)
@@ -1164,25 +1545,26 @@ class NoTimestampSolver(Solver):
                 traj_hess = Trajectory(
                     self.timestamp_solver.result, self.timestamp_solver.t
                 )
-
+                # print(t_hess, obj_hess)
+                # print(t_grad, obj_grad)
                 if (
                     obj_grad < obj + c * alpha * m_grad
                     or obj_hess < obj + c * alpha * m_hess
                 ):
-                    if obj_hess < obj_grad:
+                    if obj_hess < obj_grad or np.isnan(obj_grad):
                         t = t_hess
                         obj = obj_hess
-                        print(
+                        """print(
                             f"used hess with alpha {alpha} by {obj_grad - obj_hess:<.4f}"
-                        )
+                        )"""
                         if intermediate_traj:
                             intermediate_trajs.append(traj_hess)
                     else:
                         t = t_grad
                         obj = obj_grad
-                        print(
+                        """print(
                             f"used grad with alpha {alpha} by {obj_hess - obj_grad:<.4f}"
-                        )
+                        )"""
                         if intermediate_traj:
                             intermediate_trajs.append(traj_grad)
 
@@ -1194,14 +1576,95 @@ class NoTimestampSolver(Solver):
             prev_obj = obj
 
             i += 1
-            print(obj)
+            # print(obj)
 
-        print(f"iter: {i}")
+        # print(f"iter: {i}")
         self.obj = obj
         self.x = self.timestamp_solver.obj
         self.result = self.timestamp_solver.result
         self.t = self.timestamp_solver.t
-        return obj, self.intermediate_results, intermediate_trajs
+        return (
+            obj,
+            self.intermediate_results,
+            intermediate_trajs,
+            self.intermediate_times,
+        )
+
+    def solve_backtracking_line_search_hess(
+        self, waypoints, T, tau=0.5, c=0.5, bands=None, intermediate_traj=False, x0=None
+    ):
+
+        self.waypoints = np.array(waypoints)
+
+        n = self.waypoints.shape[0] - 1
+        normal = np.ones(n)
+        normal_ = np.ones(n)[:, np.newaxis]
+
+        if x0 is not None:
+            t = np.array(x0)
+        else:
+            dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+            t = T * dists / np.sum(dists)
+
+        prev_obj = 1e12
+        dif = 1e12
+        i = 0
+        self.intermediate_results = []
+        self.intermediate_times = []
+        intermediate_trajs = []
+        start_time = time()
+        while dif > self.tol and i < 50:
+            obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
+            self.intermediate_results.append(obj)
+            self.intermediate_times.append(time() - start_time)
+
+            grad, H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=bands)
+            grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
+
+            K = bmat([[H, normal_], [normal_.T, np.zeros((1, 1))]], format="csr")
+            rhs = np.concatenate([-grad, [0]])
+            sol = solve(K.toarray(), rhs)
+            dt_hess = sol[:-1]
+            m_hess = dt_hess @ grad_proj
+
+            alpha = 1.0
+            for _ in range(50):
+
+                t_hess = t + alpha * dt_hess
+                t_hess = t_hess / np.sum(t_hess) * T
+                obj_hess = self.timestamp_solver.solve_sparse(self.waypoints, t_hess)
+                traj_hess = Trajectory(
+                    self.timestamp_solver.result, self.timestamp_solver.t
+                )
+                if obj_hess < obj + c * alpha * m_hess:
+                    t = t_hess
+                    obj = obj_hess
+                    """print(
+                        f"used hess with alpha {alpha} by {obj_grad - obj_hess:<.4f}"
+                    )"""
+                    if intermediate_traj:
+                        intermediate_trajs.append(traj_hess)
+                    break
+
+                alpha *= tau
+
+            dif = abs(prev_obj - obj)
+            prev_obj = obj
+
+            i += 1
+            # print(obj)
+
+        # print(f"iter: {i}")
+        self.obj = obj
+        self.x = self.timestamp_solver.obj
+        self.result = self.timestamp_solver.result
+        self.t = self.timestamp_solver.t
+        return (
+            obj,
+            self.intermediate_results,
+            intermediate_trajs,
+            self.intermediate_times,
+        )
 
     def solve_backtracking_line_search_grad(self, waypoints, T, tau=0.5, c=0.0):
 
@@ -1217,13 +1680,19 @@ class NoTimestampSolver(Solver):
         dif = 1e12
         i = 0
         self.intermediate_results = []
-        while dif > self.tol and i < 20:
+        self.intermediate_times = []
+        start_time = time()
+        while dif > self.tol and i < 50:
             obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
             self.intermediate_results.append(obj)
+            self.intermediate_times.append(time() - start_time)
 
-            grad, _ = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=4)
+            grad = self.timestamp_solver.grad2(self.waypoints, t)
+            grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
             grad = grad / np.linalg.norm(grad)
-            dt_grad = grad - np.mean(grad)
+            # dt_grad = grad - np.mean(grad)
+            dt_grad = grad_proj / np.linalg.norm(grad_proj)
+            # print(f"projected gradient {dt_grad}")
             m_grad = dt_grad @ dt_grad
 
             alpha = 1.0
@@ -1242,14 +1711,105 @@ class NoTimestampSolver(Solver):
             dif = abs(prev_obj - obj)
             prev_obj = obj
             i += 1
-            print(obj)
+            # print(obj)
 
-        print(f"iter: {i}")
+        # print(f"iter: {i}")
         self.obj = obj
         self.x = self.timestamp_solver.obj
         self.result = self.timestamp_solver.result
         self.t = self.timestamp_solver.t
-        return obj, self.intermediate_results
+        return obj, self.intermediate_results, self.intermediate_times
+
+    def solve_backtracking_line_search2(
+        self, waypoints, T, tau=0.5, c=0.5, bands=None, intermediate_traj=False, x0=None
+    ):
+
+        self.waypoints = np.array(waypoints)
+
+        n = self.waypoints.shape[0] - 1
+        normal = np.ones(n)
+        normal_ = np.ones(n)[:, np.newaxis]
+        P = np.eye(n) - (normal_ @ normal_.T) / (normal @ normal)
+
+        if x0 is not None:
+            t = np.array(x0)
+        else:
+            dists = np.linalg.norm((self.waypoints[1:] - self.waypoints[:-1]), axis=1)
+            t = T * dists / np.sum(dists)
+
+        prev_obj = 1e12
+        dif = 1e12
+        i = 0
+        self.intermediate_results = []
+        self.intermediate_times = []
+        intermediate_trajs = []
+        start_time = time()
+        while dif > self.tol and i < 50:
+            obj = self.timestamp_solver.solve_sparse(self.waypoints, t)
+            self.intermediate_results.append(obj)
+            self.intermediate_times.append(time() - start_time)
+
+            grad, H = self.timestamp_solver.grad_hess2(self.waypoints, t, bands=bands)
+            """plt.imshow(H)
+            plt.colorbar()
+            plt.savefig("hessian.pdf")
+            plt.show()"""
+            grad_proj = grad - (grad @ normal) / (normal @ normal) * normal
+            # print(f"projected gradient at t={t}: {grad_proj}")
+            # grad = grad / np.linalg.norm(grad)
+            # dt_grad = grad - np.mean(grad)
+            dt_grad = grad_proj / np.linalg.norm(grad_proj)
+            # print("normalized projected gradient: ", dt_grad)
+            m_grad = dt_grad @ dt_grad
+
+            # H_proj = P @ H @ P
+
+            K = bmat([[H, normal_], [normal_.T, np.zeros((1, 1))]], format="csr")
+            rhs = np.concatenate([-grad, [0]])
+            sol = solve(K.toarray(), rhs)
+            dt_hess = sol[:-1]
+            m_hess = dt_hess @ grad_proj
+
+            alpha = 1.0
+            for _ in range(50):
+                t_hess = t + alpha * dt_hess
+                t_hess = t_hess / np.sum(t_hess) * T
+                obj_hess = self.timestamp_solver.solve_sparse(self.waypoints, t_hess)
+    
+                if obj_hess < obj + c * alpha * m_hess:
+                    t = t_hess
+                    obj = obj_hess
+                    break
+    
+                # Only evaluate gradient step if Newton failed
+                t_grad = t - alpha * dt_grad
+                t_grad = t_grad / np.sum(t_grad) * T
+                obj_grad = self.timestamp_solver.solve_sparse(self.waypoints, t_grad)
+    
+                if obj_grad < obj + c * alpha * m_grad:
+                    t = t_grad
+                    obj = obj_grad
+                    break
+    
+                alpha *= tau
+
+            dif = abs(prev_obj - obj)
+            prev_obj = obj
+
+            i += 1
+            # print(obj)
+
+        # print(f"iter: {i}")
+        self.obj = obj
+        self.x = self.timestamp_solver.obj
+        self.result = self.timestamp_solver.result
+        self.t = self.timestamp_solver.t
+        return (
+            obj,
+            self.intermediate_results,
+            intermediate_trajs,
+            self.intermediate_times,
+        )
 
     def banded(self, M, k=2):
         n, m = M.shape
