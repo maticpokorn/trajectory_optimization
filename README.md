@@ -86,3 +86,18 @@ The inner fixed-time quadratic program is solved with OSQP. The outer
 time-optimization routines use the derivatives of the inner KKT system and
 SciPy optimization interfaces where appropriate.
 
+## Citing this work
+If you use any of this code, please cite my master's thesis:
+```
+@mastersthesis{Pokorn_2026,
+  title  = {Newtonova metoda z analitičnimi odvodi za dvonivojsko optimizacijo trajektorij diferencialno ploščatih sistemov [Newton's method with analytical derivatives for bilevel trajectory optimization of differentially flat systems]},
+  author = {Pokorn, Matic},
+  year   = {2026},
+  school = {Univerza v Ljubljani},
+  type   = {Magistrsko delo},
+  note   = {In Slovenian},
+  url    = {https://hdl.handle.net/20.500.12556/RUL-189060}
+}
+```
+
+
